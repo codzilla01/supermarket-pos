@@ -1,0 +1,9 @@
+{
+  "name": "FreshMart Supermarket POS",
+  "short_name": "FreshMart POS",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f4",
+  "theme_color": "#16a34a",
+  "icons": []
+}

@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FreshMart — Supermarket POS</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login-screen" class="login-screen">
+  <form class="login-card" id="login-form">
+    <div class="login-logo">🛒</div>
+    <h1 id="login-store">FreshMart</h1>
+    <p class="muted">Supermarket Point of Sale</p>
+    <label>Username <input id="login-user" autocomplete="username" required /></label>
+    <label>Password <input id="login-pass" type="password" autocomplete="current-password" required /></label>
+    <p class="error" id="login-error" hidden></p>
+    <button class="btn primary big" type="submit">Sign in</button>
+    <p class="muted small">Default: <code>admin</code> / <code>admin123</code> — change after first login.</p>
+  </form>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" hidden>
+<header class="topbar">
+  <div class="brand"><span class="brand-icon">🛒</span><div><strong id="brand-name">FreshMart</strong><small>Supermarket POS</small></div></div>
+  <nav class="tabs">
+    <button class="tab active" data-view="pos">🧾 Point of Sale</button>
+    <button class="tab" data-view="inventory">📦 Inventory</button>
+    <button class="tab" data-view="sales">📊 Sales</button>
+    <button class="tab" data-view="customers">👥 Customers</button>
+    <button class="tab admin-only" data-view="settings">⚙️ Settings</button>
+  </nav>
+  <div class="top-actions">
+    <span class="badge" id="shift-badge" title="Current shift">No shift</span>
+    <span class="badge" id="queue-badge" hidden title="Offline sales waiting to sync">📶 0 queued</span>
+    <span class="user-chip" id="user-chip"></span>
+    <button class="btn ghost small" id="logout-btn">Logout</button>
+  </div>
+  <div class="clock" id="clock">--:--</div>
+</header>
+
+<!-- ============ POS VIEW ============ -->
+<main id="view-pos" class="view active">
+  <section class="catalog">
+    <div class="catalog-tools">
+      <div class="search-wrap"><span>🔍</span><input id="search" type="text" placeholder="Search products…" autocomplete="off" /></div>
+      <input id="barcode" type="text" placeholder="⌨ Barcode + Enter" autocomplete="off" />
+    </div>
+    <div class="categories" id="categories"></div>
+    <div class="grid" id="grid"></div>
+    <p class="empty" id="grid-empty" hidden>No products match your search.</p>
+  </section>
+
+  <aside class="cart-panel">
+    <div class="cart-head"><h2>🧺 Current Sale</h2><button class="btn ghost small" id="clear-cart">Clear</button></div>
+    <div class="customer-row">
+      <select id="customer-select"><option value="">👤 Walk-in customer</option></select>
+      <button class="btn ghost small" id="new-customer-btn" title="New customer">＋</button>
+    </div>
+    <div class="points-row" id="points-row" hidden>
+      <span id="points-info"></span>
+      <label><input type="checkbox" id="redeem-points" /> Redeem points</label>
+    </div>
+    <div class="cart-items" id="cart-items">
+      <p class="cart-empty" id="cart-empty">Cart is empty.<br/>Click a product or scan a barcode.</p>
+    </div>
+    <div class="cart-summary">
+      <label class="discount-row">Discount % <input id="discount" type="number" min="0" max="100" step="1" value="0" /></label>
+      <div class="row"><span>Subtotal</span><span id="sum-subtotal">$0.00</span></div>
+      <div class="row"><span>Discount</span><span id="sum-discount">−$0.00</span></div>
+      <div class="row"><span>Points discount</span><span id="sum-points">−$0.00</span></div>
+      <div class="row"><span>Tax</span><span id="sum-tax">$0.00</span></div>
+      <div class="row total"><span>Total</span><span id="sum-total">$0.00</span></div>
+      <button class="btn primary big" id="checkout-btn" disabled>💳 Checkout</button>
+    </div>
+  </aside>
+</main>
+
+<!-- ============ INVENTORY VIEW ============ -->
+<main id="view-inventory" class="view">
+  <div class="page-head">
+    <h2>📦 Inventory <span class="muted" id="inv-count"></span></h2>
+    <div class="head-actions"><button class="btn primary admin-only" id="add-product-btn">＋ Add product</button></div>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th></th><th>Product</th><th>Category</th><th>Barcode</th><th>Price</th><th>Unit</th><th>Stock</th><th class="admin-only"></th></tr></thead>
+    <tbody id="inv-body"></tbody>
+  </table></div>
+</main>
+
+<!-- ============ SALES VIEW ============ -->
+<main id="view-sales" class="view">
+  <div class="page-head"><h2>📊 Sales &amp; Reports</h2>
+    <div class="head-actions">
+      <select id="sales-filter"><option value="all">All statuses</option><option value="completed">Completed</option><option value="voided">Voided</option><option value="refunded">Refunded</option></select>
+      <button class="btn ghost" id="export-btn">⬇ Export CSV</button>
+    </div>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="two-col">
+    <section class="card"><h3>🏆 Top products</h3><div id="top-products"></div></section>
+    <section class="card"><h3>👤 Sales by cashier</h3><div id="by-cashier"></div></section>
+  </div>
+  <section class="card"><h3>⚠️ Low stock</h3><div id="low-stock"></div></section>
+  <section class="card"><h3>🧾 Transactions</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Date</th><th>Cashier</th><th>Customer</th><th>Items</th><th>Payment</th><th>Status</th><th>Total</th><th class="admin-only"></th></tr></thead>
+      <tbody id="sales-body"></tbody>
+    </table></div>
+  </section>
+  <section class="card"><h3>🕐 Shift history</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Cashier</th><th>Register</th><th>Opened</th><th>Closed</th><th>Float</th><th>Expected</th><th>Counted</th><th>Variance</th><th>Status</th></tr></thead>
+      <tbody id="shifts-body"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<!-- ============ CUSTOMERS VIEW ============ -->
+<main id="view-customers" class="view">
+  <div class="page-head"><h2>👥 Customers <span class="muted" id="cust-count"></span></h2>
+    <button class="btn primary" id="add-customer-btn">＋ Add customer</button></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Points</th><th>Member since</th><th class="admin-only"></th></tr></thead>
+    <tbody id="cust-body"></tbody>
+  </table></div>
+</main>
+
+<!-- ============ SETTINGS VIEW ============ -->
+<main id="view-settings" class="view">
+  <div class="page-head"><h2>⚙️ Settings</h2></div>
+  <div class="two-col">
+    <section class="card"><h3>🏪 Store</h3>
+      <form id="store-form">
+        <label>Store name <input id="s-store_name" /></label>
+        <label>Tax rate (0–1, e.g. 0.08) <input id="s-tax_rate" type="number" step="0.01" min="0" max="1" /></label>
+        <label>Currency symbol <input id="s-currency" maxlength="3" /></label>
+        <label>Low-stock threshold <input id="s-low_stock_threshold" type="number" min="0" /></label>
+        <label>Register name <input id="s-register_name" /></label>
+        <label>Points per $1 spent <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
+        <label>Point value in $ <input id="s-points_value" type="number" step="0.001" min="0" /></label>
+        <button class="btn primary" type="submit">Save settings</button>
+      </form>
+    </section>
+    <section class="card"><h3>🔐 My password</h3>
+      <form id="password-form">
+        <label>Current password <input id="pw-current" type="password" required /></label>
+        <label>New password <input id="pw-next" type="password" required /></label>
+        <button class="btn primary" type="submit">Change password</button>
+      </form>
+      <h3 style="margin-top:24px">💳 Payments</h3>
+      <p id="stripe-status" class="muted">Checking…</p>
+      <h3 style="margin-top:24px">💾 Backup</h3>
+      <div class="head-actions">
+        <button class="btn ghost" id="backup-export">⬇ Export backup (JSON)</button>
+        <label class="btn ghost file-label">⬆ Import backup<input type="file" id="backup-import" accept=".json" hidden /></label>
+      </div>
+    </section>
+  </div>
+  <section class="card"><h3>👤 Users &amp; roles</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody id="users-body"></tbody>
+    </table></div>
+    <form id="user-form" class="inline-form">
+      <input id="u-username" placeholder="Username" required />
+      <input id="u-name" placeholder="Display name" />
+      <input id="u-password" type="password" placeholder="Password (min 6)" required />
+      <select id="u-role"><option value="cashier">Cashier</option><option value="admin">Admin</option></select>
+      <button class="btn primary" type="submit">＋ Add user</button>
+    </form>
+  </section>
+</main>
+</div>
+
+<!-- ============ SHIFT MODAL ============ -->
+<div class="modal-backdrop" id="shift-modal" hidden>
+  <div class="modal">
+    <h2 id="shift-modal-title">Open shift</h2>
+    <div id="shift-open-fields">
+      <label>Opening cash float ($) <input id="opening-float" type="number" min="0" step="0.01" value="100" /></label>
+    </div>
+    <div id="shift-close-fields" hidden>
+      <div class="row"><span>Expected cash</span><span id="expected-cash">$0.00</span></div>
+      <label>Counted cash ($) <input id="closing-amount" type="number" min="0" step="0.01" /></label>
+      <div class="row"><span>Variance</span><span id="variance">$0.00</span></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" id="shift-confirm">Open shift</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CHECKOUT MODAL ============ -->
+<div class="modal-backdrop" id="checkout-modal" hidden>
+  <div class="modal">
+    <h2>💳 Checkout</h2>
+    <div class="pay-toggle">
+      <button class="pay-btn active" data-pay="cash">💵 Cash</button>
+      <button class="pay-btn" data-pay="card">💳 Card</button>
+    </div>
+    <div class="row total"><span>Amount due</span><span id="due">$0.00</span></div>
+    <div id="cash-fields">
+      <label>Tendered <input id="tendered" type="number" min="0" step="0.01" placeholder="0.00" /></label>
+      <div class="quick"><button data-amt="exact">Exact</button><button data-amt="5">$5</button><button data-amt="10">$10</button><button data-amt="20">$20</button><button data-amt="50">$50</button></div>
+      <div class="row"><span>Change</span><span id="change">$0.00</span></div>
+    </div>
+    <div id="card-fields" hidden>
+      <p class="muted" id="card-note">Card payment will be processed securely.</p>
+      <div id="stripe-card-element"></div>
+    </div>
+    <p class="error" id="checkout-error" hidden></p>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" id="complete-sale">Complete sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RECEIPT MODAL ============ -->
+<div class="modal-backdrop" id="receipt-modal" hidden>
+  <div class="modal receipt">
+    <div id="receipt-body"></div>
+    <div class="modal-actions no-print">
+      <button class="btn ghost" id="print-receipt">🖨 Print</button>
+      <button class="btn primary" data-close>New sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PRODUCT MODAL ============ -->
+<div class="modal-backdrop" id="product-modal" hidden>
+  <form class="modal" id="product-form">
+    <h2 id="product-form-title">Add product</h2>
+    <input type="hidden" id="f-id" />
+    <label>Name <input id="f-name" required /></label>
+    <label>Category <input id="f-category" list="cat-list" required /><datalist id="cat-list"></datalist></label>
+    <div class="form-row">
+      <label>Price <input id="f-price" type="number" min="0" step="0.01" required /></label>
+      <label>Stock <input id="f-stock" type="number" min="0" step="1" required /></label>
+    </div>
+    <div class="form-row">
+      <label>Unit <input id="f-unit" value="each" /></label>
+      <label>Emoji <input id="f-emoji" value="📦" maxlength="4" /></label>
+    </div>
+    <label>Barcode <input id="f-barcode" placeholder="auto-generated if empty" /></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Save product</button>
+    </div>
+  </form>
+</div>
+
+<!-- ============ CUSTOMER MODAL ============ -->
+<div class="modal-backdrop" id="customer-modal" hidden>
+  <form class="modal" id="customer-form">
+    <h2 id="customer-form-title">Add customer</h2>
+    <input type="hidden" id="c-id" />
+    <label>Name <input id="c-name" required /></label>
+    <label>Phone <input id="c-phone" placeholder="e.g. +31 6 1234 5678" /></label>
+    <label>Email <input id="c-email" type="email" /></label>
+    <label id="c-points-wrap" hidden>Points <input id="c-points" type="number" min="0" /></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Save customer</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
