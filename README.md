@@ -18,15 +18,15 @@ Open http://localhost:3000 and sign in with the seeded admin account:
 
 ## Features
 
-- **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, configurable tax, printable receipts
+- **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, store default plus per-product tax rates, printable receipts; sale retries use idempotency keys
 - **Users & roles** — Admin (inventory, settings, users, voids/refunds, backups) vs Cashier (selling only); scrypt password hashing, 12-hour sessions, login rate limiting
 - **Shifts** — open/close with opening float, expected-vs-counted cash reconciliation, per-shift history
 - **Loyalty** — customers with phone numbers, earn points per dollar spent, redeem points at checkout
-- **Returns** — void/refund actions restore stock and loyalty points. These are internal records only; a card refund must still be issued through your payment provider.
+- **Returns** — void/refund actions restore stock and loyalty points; with Stripe enabled, full card refunds are sent to Stripe with an idempotency key. Simulated-card and legacy sales require manual provider reconciliation.
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
-- **Offline mode** — the app shell is cached (service worker); sales made offline are queued and synced automatically on reconnect
-- **Backups** — full JSON export/import of products, sales, customers and settings
-- **Stripe checkout (USD)** — set `STRIPE_SECRET_KEY` + `STRIPE_PUBLISHABLE_KEY`; when configured, the server verifies PaymentIntent status and exact sale amount before recording a card sale. Without keys, card payments are simulated.
+- **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
+- **Backups** — JSON export/import of products, sales, sale items, shifts, customers and settings (user credentials are not exported)
+- **Stripe checkout (USD/EUR/GBP)** — set `STRIPE_SECRET_KEY` + `STRIPE_PUBLISHABLE_KEY`; the server verifies PaymentIntent settlement and amount, and full refunds are sent to Stripe with idempotency. Without keys, card payments are simulated.
 
 ## Configuration (environment variables)
 
@@ -35,6 +35,7 @@ Open http://localhost:3000 and sign in with the seeded admin account:
 | `PORT` | `3000` | HTTP port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `POS_DB_PATH` | `./pos.db` | SQLite database file |
+| `POS_COOKIE_SECURE` | `true` | Secure session cookies; set false only for local plain HTTP |
 | `STRIPE_SECRET_KEY` | — | Stripe secret key (enables live card payments) |
 | `STRIPE_PUBLISHABLE_KEY` | — | Stripe publishable key |
 
@@ -53,10 +54,10 @@ npm test   # spins up a throwaway server + temp DB and exercises the API
 
 ## Before going live
 
-This is a production-oriented baseline, not a certified retail deployment. Configure the correct tax and currency for your jurisdiction before use. The sample tax is a single flat rate (8%) and the sample currency is USD; it does not model multiple product tax classes. Stripe checkout currently charges USD. Card refunds are not sent to Stripe automatically. Validate payment terminal, refund, receipt, backup/restore and offline recovery procedures in a Stripe test account and staging environment before handling real customers.
+This remains a production-oriented baseline, not a certified retail deployment. Configure the store default and per-product tax rates and verify local invoicing/fiscal rules; the software does not decide which rate applies to a product. Currency codes USD, EUR and GBP are supported for Stripe checkout. Full Stripe refunds are initiated automatically when a matching PaymentIntent is recorded, but partial refunds, provider webhooks/reconciliation and fiscal integrations are not implemented. Validate payment, refund, receipt, backup/restore and offline recovery in a Stripe test account and staging before handling customers.
 
 ## Deployment notes
 
-- Run behind a reverse proxy (nginx/Caddy) with **HTTPS** — session cookies are `HttpOnly; SameSite=Lax`.
+- Run behind a reverse proxy (nginx/Caddy) with **HTTPS** — session cookies are `HttpOnly; SameSite=Lax; Secure` by default. Set `POS_COOKIE_SECURE=false` only for local plain-HTTP development.
 - For multi-register setups, run one instance per register against a shared database volume, or extend the API with a sync layer.
 - Hardware: receipt printing uses the browser print dialog (thermal-printer friendly CSS included); barcode scanners in keyboard-wedge mode work without drivers.

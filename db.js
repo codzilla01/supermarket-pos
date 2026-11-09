@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS = {
   store_name: 'FreshMart',
   tax_rate: '0.08',
   currency: '$',
+  currency_code: 'USD',
   low_stock_threshold: '10',
   register_name: 'Register 1',
   points_per_dollar: '1',
@@ -63,9 +64,9 @@ function openDb(dbPath = DB_PATH) {
 }
 
 function migrate(db) {
-  const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version >= 1) return;
-  db.exec(`
+  let version = db.prepare('PRAGMA user_version').get().user_version;
+  if (version < 1) {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
@@ -148,7 +149,29 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
     CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
   `);
-  db.prepare('PRAGMA user_version = 1').run();
+    db.prepare('PRAGMA user_version = 1').run();
+    version = 1;
+  }
+  if (version < 2) {
+    db.exec(`
+      ALTER TABLE products ADD COLUMN tax_rate REAL;
+      ALTER TABLE sales ADD COLUMN payment_intent_id TEXT;
+      ALTER TABLE sales ADD COLUMN stripe_refund_id TEXT;
+      ALTER TABLE sales ADD COLUMN idempotency_key TEXT;
+      ALTER TABLE sale_items ADD COLUMN tax_rate REAL;
+      ALTER TABLE sale_items ADD COLUMN tax REAL;
+      CREATE UNIQUE INDEX idx_sales_idempotency ON sales(idempotency_key);
+    `);
+    db.prepare('PRAGMA user_version = 2').run();
+    version = 2;
+  }
+  if (version < 3) {
+    db.exec(`
+      ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+      UPDATE users SET must_change_password = 1 WHERE username = 'admin';
+    `);
+    db.prepare('PRAGMA user_version = 3').run();
+  }
 }
 
 function seed(db, hashPassword) {
@@ -159,7 +182,7 @@ function seed(db, hashPassword) {
   // Admin user (created once)
   const admin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
   if (!admin) {
-    db.prepare('INSERT INTO users(username, password_hash, role, name) VALUES(?, ?, ?, ?)')
+    db.prepare('INSERT INTO users(username, password_hash, role, name, must_change_password) VALUES(?, ?, ?, ?, 1)')
       .run('admin', hashPassword('admin123'), 'admin', 'Store Manager');
   }
 
