@@ -4,7 +4,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let me = null;               // {id, username, role, name}
-let settings = { store_name: 'FreshMart', tax_rate: '0.08', currency: '$', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
+let settings = { store_name: 'FreshMart', tax_rate: '0.08', currency: '$', currency_code: 'USD', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
 let products = [];
 let customers = [];
 let cart = {};               // productId -> qty
@@ -72,10 +72,17 @@ $('#login-form').addEventListener('submit', async e => {
   try {
     const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#login-user').value, password: $('#login-pass').value }) });
     me = data.user;
+    if (me.mustChangePassword) {
+      $('#login-screen').hidden = true;
+      $('#force-password-modal').hidden = false;
+      $('#force-pw-current').focus();
+      return;
+    }
     await loadConfig();
     showApp();
     await refreshAll();
     await ensureShift();
+    await syncQueue();
   } catch (e2) {
     err.textContent = '⚠️ ' + e2.message;
     err.hidden = false;
@@ -215,15 +222,32 @@ function selectedCustomer() {
 }
 
 function totals() {
-  const subtotal = cartEntries().reduce((s, e) => s + e.product.price * e.qty, 0);
+  const r2 = n => Math.round((n + Number.EPSILON) * 100) / 100;
+  const entries = cartEntries();
+  const subtotal = r2(entries.reduce((s, e) => s + e.product.price * e.qty, 0));
   const discountPct = Math.min(100, Math.max(0, parseFloat($('#discount').value) || 0));
-  const discount = subtotal * discountPct / 100;
+  const discount = r2(subtotal * discountPct / 100);
+  const afterDiscount = Math.max(0, r2(subtotal - discount));
   const cust = selectedCustomer();
-  const redeem = cust && $('#redeem-points').checked ? Math.min(cust.points, Math.floor((subtotal - discount) / Math.max(pointsValue(), 0.0001))) : 0;
-  const pointsDiscount = redeem * pointsValue();
-  const taxable = Math.max(0, subtotal - discount - pointsDiscount);
-  const tax = taxable * taxRate();
-  return { subtotal, discountPct, discount, redeem, pointsDiscount, tax, total: taxable + tax };
+  const redeemLimit = pointsValue() > 0 ? Math.floor(afterDiscount / pointsValue()) : 0;
+  const redeem = cust && $('#redeem-points').checked ? Math.min(cust.points, redeemLimit) : 0;
+  const pointsDiscount = r2(redeem * pointsValue());
+  let allocated = 0, taxable = 0, tax = 0;
+  entries.forEach(({ product: p, qty }, idx) => {
+    const line = r2(p.price * qty);
+    const netBeforePoints = r2(line * (1 - discountPct / 100));
+    const pointsShare = idx === entries.length - 1
+      ? r2(pointsDiscount - allocated)
+      : r2(afterDiscount > 0 ? pointsDiscount * netBeforePoints / afterDiscount : 0);
+    allocated = r2(allocated + pointsShare);
+    const lineTaxable = r2(Math.max(0, netBeforePoints - pointsShare));
+    const rate = p.tax_rate == null ? taxRate() : Math.max(0, Math.min(1, Number(p.tax_rate)));
+    taxable += lineTaxable;
+    tax += r2(lineTaxable * rate);
+  });
+  taxable = r2(taxable);
+  tax = r2(tax);
+  return { subtotal, discountPct, discount, redeem, pointsDiscount, tax, total: r2(taxable + tax) };
 }
 
 function renderCart() {
@@ -349,6 +373,7 @@ $('#complete-sale').addEventListener('click', async () => {
     tendered: payMethod === 'cash' ? parseFloat($('#tendered').value) || 0 : null,
     customerId: cust?.id ?? null,
     redeemPoints: t.redeem,
+    idempotencyKey: (crypto.randomUUID ? crypto.randomUUID() : `pos-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   };
   if (payMethod === 'cash' && payload.tendered < t.total) {
     err.textContent = `⚠️ Tendered amount is less than the total (${money(t.total)}).`;
@@ -394,6 +419,13 @@ async function afterSale() {
 function showReceipt(sale) {
   const rows = sale.items.map(i =>
     `<div class="r-row"><span>${i.emoji} ${esc(i.name)} ×${i.qty}</span><span>${money(i.line_total)}</span></div>`).join('');
+  const taxRows = sale.items.length && sale.items.every(i => i.tax_rate != null && i.tax != null)
+    ? Object.entries(sale.items.reduce((groups, i) => {
+        const key = Number(i.tax_rate);
+        groups[key] = (groups[key] || 0) + Number(i.tax);
+        return groups;
+      }, {})).map(([rate, amount]) => `<div class="r-row"><span>Tax (${(Number(rate) * 100).toFixed(0)}%)</span><span>${money(amount)}</span></div>`).join('')
+    : `<div class="r-row"><span>Tax</span><span>${money(sale.tax)}</span></div>`;
   $('#receipt-body').innerHTML = `
     <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(settings.register_name)}</div>
     <div>Sale #${sale.id} · ${new Date(sale.date).toLocaleString()}</div>
@@ -402,7 +434,7 @@ function showReceipt(sale) {
     <div class="r-row"><span>Subtotal</span><span>${money(sale.subtotal)}</span></div>
     ${sale.discount ? `<div class="r-row"><span>Discount (${sale.discount_pct}%)</span><span>−${money(sale.discount)}</span></div>` : ''}
     ${sale.points_redeemed ? `<div class="r-row"><span>Points redeemed (${sale.points_redeemed})</span><span>−${money(sale.points_redeemed * pointsValue())}</span></div>` : ''}
-    <div class="r-row"><span>Tax (${(taxRate() * 100).toFixed(0)}%)</span><span>${money(sale.tax)}</span></div>
+    ${taxRows}
     <div class="r-row r-total"><span>TOTAL</span><span>${money(sale.total)}</span></div>
     <div class="r-row"><span>Payment</span><span>${sale.payment === 'card' ? '💳 Card' : '💵 Cash'}</span></div>
     ${sale.tendered != null ? `<div class="r-row"><span>Tendered</span><span>${money(sale.tendered)}</span></div><div class="r-row"><span>Change</span><span>${money(sale.change)}</span></div>` : ''}
@@ -426,14 +458,22 @@ function updateQueueBadge() {
   const badge = $('#queue-badge');
   badge.hidden = n === 0;
   badge.textContent = `📶 ${n} queued`;
+  const issues = getQueue().map(x => x.lastError).filter(Boolean);
+  badge.title = issues.length ? `Tap to retry. Last error: ${issues[0]}` : 'Tap to sync queued sales';
 }
+$('#queue-badge').addEventListener('click', syncQueue);
 async function syncQueue() {
   const q = getQueue();
   if (!q.length) return;
   const remaining = [];
   for (const entry of q) {
-    try { await api('/api/sales', { method: 'POST', body: JSON.stringify(entry.payload) }); }
-    catch (e) { if (!e.offline) { /* server rejected — drop */ } else remaining.push(entry); }
+    try {
+      await api('/api/sales', { method: 'POST', body: JSON.stringify(entry.payload) });
+    } catch (e) {
+      // Preserve failed entries for cashier review; never silently discard a sale.
+      entry.lastError = e.message;
+      remaining.push(entry);
+    }
   }
   localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining));
   updateQueueBadge();
@@ -442,6 +482,7 @@ async function syncQueue() {
     renderGrid();
     toast(`✅ Synced ${q.length - remaining.length} offline sale(s)`);
   }
+  if (remaining.length) toast(`⚠️ ${remaining.length} queued sale(s) need review or retry`);
 }
 window.addEventListener('online', syncQueue);
 
@@ -477,6 +518,7 @@ function openProductForm(p) {
   $('#f-unit').value = p ? p.unit : 'each';
   $('#f-emoji').value = p ? (p.emoji || '📦') : '📦';
   $('#f-barcode').value = p ? p.barcode : '';
+  $('#f-tax-rate').value = p && p.tax_rate != null ? p.tax_rate : '';
   $('#cat-list').innerHTML = categories().filter(c => c !== 'All').map(c => `<option value="${esc(c)}">`).join('');
   openModal('#product-modal');
 }
@@ -484,7 +526,7 @@ $('#add-product-btn').addEventListener('click', () => openProductForm(null));
 $('#product-form').addEventListener('submit', async e => {
   e.preventDefault();
   const id = $('#f-id').value;
-  const body = { name: $('#f-name').value, category: $('#f-category').value, price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: $('#f-unit').value, emoji: $('#f-emoji').value, barcode: $('#f-barcode').value };
+  const body = { name: $('#f-name').value, category: $('#f-category').value, price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: $('#f-unit').value, emoji: $('#f-emoji').value, barcode: $('#f-barcode').value, taxRate: $('#f-tax-rate').value };
   try {
     if (id) await api(`/api/products/${id}`, { method: 'PUT', body: JSON.stringify(body) });
     else await api('/api/products', { method: 'POST', body: JSON.stringify(body) });
@@ -595,17 +637,17 @@ $('#sales-filter').addEventListener('change', renderSales);
 async function saleAction(id, action) {
   if (!confirm(`${action === 'void' ? 'Void' : 'Refund'} sale #${id}? Stock will be restored.`)) return;
   try {
-    await api(`/api/sales/${id}/${action}`, { method: 'POST' });
+    const result = await api(`/api/sales/${id}/${action}`, { method: 'POST' });
     products = await api('/api/products');
     renderGrid(); renderSales();
-    toast(`✅ Sale ${action === 'void' ? 'voided' : 'refunded'}`);
+    toast(result.status === 'refund_pending' ? '⚠️ Provider refund is pending' : `✅ Sale ${action === 'void' ? 'voided' : 'refunded'}`);
   } catch (e) { toast('⚠️ ' + e.message); }
 }
 
 // ---------- Settings ----------
 async function renderSettings() {
   if (me.role !== 'admin') return;
-  for (const k of ['store_name', 'tax_rate', 'currency', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) {
+  for (const k of ['store_name', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) {
     $('#s-' + k).value = settings[k];
   }
   $('#stripe-status').innerHTML = stripeConfigured
@@ -627,13 +669,33 @@ async function renderSettings() {
 $('#store-form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = {};
-  for (const k of ['store_name', 'tax_rate', 'currency', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) body[k] = $('#s-' + k).value;
+  for (const k of ['store_name', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) body[k] = $('#s-' + k).value;
   try {
     settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
     showApp();
     renderCart(); renderGrid();
     toast('✅ Settings saved');
   } catch (err) { toast('⚠️ ' + err.message); }
+});
+
+$('#force-password-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const error = $('#force-pw-error');
+  error.hidden = true;
+  try {
+    await api('/api/me/password', { method: 'POST', body: JSON.stringify({ current: $('#force-pw-current').value, next: $('#force-pw-next').value }) });
+    $('#force-password-modal').hidden = true;
+    $('#force-pw-current').value = $('#force-pw-next').value = '';
+    me.mustChangePassword = false;
+    await loadConfig();
+    showApp();
+    await refreshAll();
+    await ensureShift();
+    await syncQueue();
+  } catch (err) {
+    error.textContent = '⚠️ ' + err.message;
+    error.hidden = false;
+  }
 });
 
 $('#password-form').addEventListener('submit', async e => {
@@ -689,11 +751,17 @@ async function refreshAll() {
   try {
     const data = await api('/api/me');
     me = data.user;
-    await loadConfig();
-    showApp();
-    await refreshAll();
-    await ensureShift();
-    syncQueue();
+    if (me.must_change_password) {
+      $('#login-screen').hidden = true;
+      $('#force-password-modal').hidden = false;
+      $('#force-pw-current').focus();
+    } else {
+      await loadConfig();
+      showApp();
+      await refreshAll();
+      await ensureShift();
+      await syncQueue();
+    }
   } catch {
     showLogin();
   }

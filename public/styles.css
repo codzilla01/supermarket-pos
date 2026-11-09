@@ -33,6 +33,7 @@ code { background: #f3f4f6; padding: 1px 6px; border-radius: 5px; font-size: 12p
 .badge { padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #fef3c7; color: var(--amber); }
 .badge.open { background: var(--green-soft); color: var(--green-dark); }
 .badge.queue { background: #dbeafe; color: #1d4ed8; }
+#queue-badge { cursor: pointer; }
 .user-chip { font-size: 13px; font-weight: 700; color: var(--muted); }
 .clock { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
 

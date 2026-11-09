@@ -32,7 +32,7 @@ function createSession(db, userId) {
 function getSessionUser(db, token) {
   if (!token) return null;
   const row = db.prepare(`
-    SELECT u.id, u.username, u.role, u.name, u.active, s.expires_at
+    SELECT u.id, u.username, u.role, u.name, u.active, u.must_change_password, s.expires_at
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token = ?
   `).get(token);
