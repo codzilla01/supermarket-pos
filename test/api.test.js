@@ -76,10 +76,27 @@ test('wrong password is rejected', async () => {
   assert.equal(r.status, 401);
 });
 
-test('products are seeded', async () => {
+test('products are seeded and starter catalog can be restored without overwriting prices', async () => {
   const r = await req('GET', '/api/products');
   assert.equal(r.status, 200);
   assert.ok(r.data.length >= 30);
+  const first = r.data[0];
+  const editedPrice = Number((first.price + 0.17).toFixed(2));
+  await req('PUT', `/api/products/${first.id}`, { price: editedPrice });
+  await req('DELETE', `/api/products/${first.id}`);
+  const restored = await req('POST', '/api/products/defaults', {});
+  assert.equal(restored.status, 200);
+  assert.equal(restored.data.reactivated, 1);
+  const after = (await req('GET', '/api/products')).data.find(p => p.id === first.id);
+  assert.equal(after.price, editedPrice);
+  assert.equal(after.stock, first.stock);
+});
+
+test('checkout rejects card payments and disables the old card intent route', async () => {
+  const sale = await req('POST', '/api/sales', { idempotencyKey: 'test-card-sale-disabled', items: [{ id: 1, qty: 1 }], payment: 'card' });
+  assert.equal(sale.status, 400);
+  const intent = await req('POST', '/api/payments/intent', { amount: 1 });
+  assert.equal(intent.status, 410);
 });
 
 test('sale requires an open shift', async () => {
