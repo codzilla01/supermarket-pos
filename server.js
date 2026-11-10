@@ -2,19 +2,18 @@
 /**
  * FreshMart Supermarket POS — production server.
  * Zero-dependency Node.js: SQLite (node:sqlite), scrypt auth, sessions,
- * shifts, loyalty, returns, settings, backups, optional Stripe payments.
+ * shifts, loyalty, returns, settings, backups, cash-only checkout.
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { openDb, seed, getSettings, setSettings } = require('./db');
+const { openDb, seed, getSettings, setSettings, SEED_PRODUCTS } = require('./db');
 const auth = require('./auth');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
-const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || '';
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || ''; // legacy card refunds only
 const MIN_PASSWORD_LENGTH = 12;
 
 const db = openDb();
@@ -54,7 +53,7 @@ function securityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://js.stripe.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.stripe.com; frame-src https://js.stripe.com");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'");
 }
 
 // Login rate limiting: 8 attempts / 15 min / IP
@@ -91,7 +90,7 @@ const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 const registerFor = req => str(req.headers['x-pos-register'], 60) || getSettings(db).register_name;
 const round2 = n => Math.round(n * 100) / 100;
 
-// ---------- Stripe (optional) ----------
+// ---------- Stripe (legacy card refunds only; new checkout is cash-only) ----------
 async function stripeRequest(url, options = {}) {
   const res = await fetch(url, {
     ...options,
@@ -106,20 +105,6 @@ async function stripeRequest(url, options = {}) {
   return data;
 }
 
-async function stripeCreatePaymentIntent(amountCents, currency = 'usd') {
-  const params = new URLSearchParams({
-    amount: String(amountCents),
-    currency,
-    'automatic_payment_methods[enabled]': 'true',
-    'automatic_payment_methods[allow_redirects]': 'never',
-  });
-  return stripeRequest('https://api.stripe.com/v1/payment_intents', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
-  });
-}
-
 async function stripeCreateRefund(paymentIntentId, saleId) {
   const body = new URLSearchParams({ payment_intent: paymentIntentId });
   return stripeRequest('https://api.stripe.com/v1/refunds', {
@@ -130,11 +115,6 @@ async function stripeCreateRefund(paymentIntentId, saleId) {
     },
     body: body.toString(),
   });
-}
-
-async function stripeGetPaymentIntent(id) {
-  if (!/^pi_[A-Za-z0-9]+$/.test(String(id || ''))) throw new Error('Invalid payment reference');
-  return stripeRequest(`https://api.stripe.com/v1/payment_intents/${encodeURIComponent(id)}`);
 }
 
 // ---------- API handlers ----------
@@ -169,10 +149,27 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user });
   if (p === '/api/config' && method === 'GET') {
-    return sendJson(res, 200, { stripe: !!STRIPE_SECRET_KEY, stripePublishableKey: STRIPE_PUBLISHABLE_KEY, settings: getSettings(db) });
+    return sendJson(res, 200, { settings: getSettings(db), paymentMethods: ['cash'] });
   }
 
   // ----- Products -----
+  if (p === '/api/products/defaults' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const add = db.prepare('INSERT INTO products(name, category, price, unit, stock, barcode, emoji) VALUES(?, ?, ?, ?, ?, ?, ?)');
+    let added = 0;
+    let reactivated = 0;
+    for (const product of SEED_PRODUCTS) {
+      const existing = db.prepare('SELECT id, active FROM products WHERE barcode = ?').get(product.barcode);
+      if (!existing) {
+        add.run(product.name, product.category, product.price, product.unit, product.stock, product.barcode, product.emoji);
+        added++;
+      } else if (!existing.active) {
+        db.prepare('UPDATE products SET active = 1 WHERE id = ?').run(existing.id);
+        reactivated++;
+      }
+    }
+    return sendJson(res, 200, { added, reactivated, defaults: SEED_PRODUCTS.length });
+  }
   if (p === '/api/products' && method === 'GET') {
     return sendJson(res, 200, db.prepare('SELECT * FROM products WHERE active = 1 ORDER BY category, name').all());
   }
@@ -297,6 +294,7 @@ async function handleApi(req, res, url) {
     const b = await readBody(req);
     const idempotencyKey = str(b.idempotencyKey, 100);
     if (!/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return sendJson(res, 400, { error: 'A unique idempotency key is required for each sale' });
+    if (b.payment !== undefined && b.payment !== 'cash') return sendJson(res, 400, { error: 'This register accepts cash payments only' });
     const prior = db.prepare('SELECT * FROM sales WHERE idempotency_key = ?').get(idempotencyKey);
     if (prior) {
       prior.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(prior.id);
@@ -365,25 +363,10 @@ async function handleApi(req, res, url) {
     taxable = round2(taxable);
     tax = round2(tax);
     const total = round2(taxable + tax);
-    const payment = b.payment === 'card' ? 'card' : 'cash';
-    const tendered = payment === 'cash' ? num(b.tendered) : null;
-    if (payment === 'cash' && tendered < total) return sendJson(res, 400, { error: 'Tendered amount is less than the total' });
-    const change = payment === 'cash' ? round2(tendered - total) : null;
-    // When live Stripe is configured, never record a card sale based only on a
-    // browser-side success response: retrieve the intent and verify settlement + amount.
-    if (payment === 'card' && STRIPE_SECRET_KEY) {
-      if (!b.paymentIntentId) return sendJson(res, 402, { error: 'A verified Stripe payment is required' });
-      try {
-        const currency = String(settings.currency_code || 'USD').toLowerCase();
-        if (!['usd', 'eur', 'gbp'].includes(currency)) return sendJson(res, 400, { error: 'Stripe supports USD, EUR, or GBP in this POS configuration' });
-        const intent = await stripeGetPaymentIntent(b.paymentIntentId);
-        if (intent.status !== 'succeeded' || intent.amount !== Math.round(total * 100) || intent.currency !== currency) {
-          return sendJson(res, 402, { error: 'Stripe payment is not settled for this sale total and currency' });
-        }
-      } catch (e) {
-        return sendJson(res, 502, { error: 'Could not verify card payment: ' + e.message });
-      }
-    }
+    const payment = 'cash';
+    const tendered = num(b.tendered);
+    if (tendered < total) return sendJson(res, 400, { error: 'Tendered amount is less than the total' });
+    const change = round2(tendered - total);
     const pointsEarned = customer ? Math.floor(total * pointsPerDollar) : 0;
 
     let saleId;
@@ -391,7 +374,7 @@ async function handleApi(req, res, url) {
     try {
       const info = db.prepare(`INSERT INTO sales(cashier_id, register, shift_id, subtotal, discount_pct, discount, tax, total, payment, tendered, change, customer_id, points_earned, points_redeemed, payment_intent_id, idempotency_key)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(user.id, shift.register, shift.id, subtotal, discountPct, discount, tax, total, payment, tendered, change, customer?.id ?? null, pointsEarned, pointsRedeemed, payment === 'card' && STRIPE_SECRET_KEY ? b.paymentIntentId : null, idempotencyKey);
+        .run(user.id, shift.register, shift.id, subtotal, discountPct, discount, tax, total, payment, tendered, change, customer?.id ?? null, pointsEarned, pointsRedeemed, null, idempotencyKey);
       saleId = info.lastInsertRowid;
       const insItem = db.prepare('INSERT INTO sale_items(sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)');
       const decStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?');
@@ -426,7 +409,8 @@ async function handleApi(req, res, url) {
     if (!sale) return sendJson(res, 404, { error: 'Sale not found' });
     if (sale.status !== 'completed') return sendJson(res, 409, { error: `Sale is already ${sale.status}` });
     let stripeRefund = null;
-    if (sale.payment === 'card' && STRIPE_SECRET_KEY) {
+    if (sale.payment === 'card') {
+      if (!STRIPE_SECRET_KEY) return sendJson(res, 409, { error: 'Configure STRIPE_SECRET_KEY and reconcile this historical card refund with the provider first' });
       if (!sale.payment_intent_id) return sendJson(res, 409, { error: 'This card sale has no provider payment reference; reconcile it manually' });
       try {
         stripeRefund = await stripeCreateRefund(sale.payment_intent_id, sale.id);
@@ -559,20 +543,9 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, getSettings(db));
   }
 
-  // ----- Payments (Stripe-ready) -----
+  // New transactions are cash-only; keep the old route explicitly disabled.
   if (p === '/api/payments/intent' && method === 'POST') {
-    const b = await readBody(req);
-    const amount = Math.round(num(b.amount) * 100);
-    if (amount <= 0) return sendJson(res, 400, { error: 'Invalid amount' });
-    if (!STRIPE_SECRET_KEY) return sendJson(res, 200, { simulated: true, message: 'Stripe not configured — card payment simulated.' });
-    try {
-      const currency = String(getSettings(db).currency_code || 'USD').toLowerCase();
-      if (!['usd', 'eur', 'gbp'].includes(currency)) return sendJson(res, 400, { error: 'Stripe supports USD, EUR, or GBP in this POS configuration' });
-      const intent = await stripeCreatePaymentIntent(amount, currency);
-      return sendJson(res, 200, { id: intent.id, clientSecret: intent.client_secret, simulated: false });
-    } catch (e) {
-      return sendJson(res, 502, { error: 'Payment gateway error: ' + e.message });
-    }
+    return sendJson(res, 410, { error: 'Card payments are disabled. This POS accepts cash only.' });
   }
 
   // ----- Backup -----
@@ -651,7 +624,7 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`🛒 FreshMart POS (production) running at http://${HOST}:${PORT}`);
     console.log(`   Default admin login: admin / admin123  (password rotation required at first login)`);
-    console.log(`   Stripe payments: ${STRIPE_SECRET_KEY ? 'ENABLED' : 'not configured (card payments simulated)'}`);
+    console.log('   Checkout: cash only');
   });
 }
 

@@ -12,9 +12,6 @@ let activeCategory = 'All';
 let searchTerm = '';
 let payMethod = 'cash';
 let shift = null;            // open shift or null
-let stripeConfigured = false;
-let stripePublishableKey = '';
-let stripe = null, stripeCard = null;
 let lastSale = null;
 
 const money = n => settings.currency + Number(n || 0).toFixed(2);
@@ -46,6 +43,112 @@ function toast(msg) {
   clearTimeout(t._timer);
   t._timer = setTimeout(() => (t.hidden = true), 3000);
 }
+
+// ---------- Notifications (persistent visual center + optional sound/browser alerts) ----------
+const NOTIFICATION_KEY = 'pos_notifications_v1';
+const SOUND_KEY = 'pos_notification_sound';
+let notificationAudio = null;
+let stockSnapshot = new Map();
+function readNotifications() {
+  try { return JSON.parse(localStorage.getItem(NOTIFICATION_KEY) || '[]'); } catch { return []; }
+}
+function notificationSoundEnabled() { return localStorage.getItem(SOUND_KEY) !== 'off'; }
+function playNotificationSound(level = 'info') {
+  if (!notificationSoundEnabled()) return;
+  try {
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return;
+    notificationAudio ||= new Audio();
+    notificationAudio.resume().catch(() => {});
+    const tones = level === 'critical' ? [[880, 0], [660, 0.17]] : level === 'warning' ? [[740, 0]] : [[660, 0]];
+    for (const [frequency, delay] of tones) {
+      const oscillator = notificationAudio.createOscillator();
+      const gain = notificationAudio.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.001, notificationAudio.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.12, notificationAudio.currentTime + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, notificationAudio.currentTime + delay + 0.18);
+      oscillator.connect(gain); gain.connect(notificationAudio.destination);
+      oscillator.start(notificationAudio.currentTime + delay);
+      oscillator.stop(notificationAudio.currentTime + delay + 0.2);
+    }
+  } catch { /* Audio may be blocked until the cashier interacts with the page. */ }
+}
+function renderNotifications() {
+  const items = readNotifications();
+  const unread = items.filter(n => !n.read).length;
+  const count = $('#notifications-count');
+  count.hidden = unread === 0;
+  count.textContent = unread > 99 ? '99+' : String(unread);
+  $('#notification-sound').textContent = notificationSoundEnabled() ? '🔊 Sound on' : '🔇 Sound off';
+  $('#notification-permission').textContent = typeof Notification === 'undefined' ? 'Browser alerts unavailable' : (Notification.permission === 'granted' ? 'Browser alerts enabled' : 'Enable browser alerts');
+  $('#notification-list').innerHTML = items.length ? items.map(n => `
+    <article class="notification-item ${esc(n.level)} ${n.read ? '' : 'unread'}" data-notification-id="${esc(n.id)}">
+      <div class="notification-title">${esc(n.title)}</div>
+      <div class="notification-message">${esc(n.message)}</div>
+      <time>${new Date(n.createdAt).toLocaleString()}</time>
+    </article>`).join('') : '<div class="notification-empty">No notifications yet.</div>';
+}
+function notifyUser(title, message, { level = 'info', key = '', sound = true } = {}) {
+  const items = readNotifications();
+  const now = Date.now();
+  if (key && items.some(n => n.key === key && now - new Date(n.createdAt).getTime() < 5 * 60 * 1000)) return;
+  const item = { id: (crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random()}`), key, title, message, level, createdAt: new Date(now).toISOString(), read: false };
+  items.unshift(item);
+  localStorage.setItem(NOTIFICATION_KEY, JSON.stringify(items.slice(0, 80)));
+  renderNotifications();
+  if (sound) playNotificationSound(level);
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+    try { new Notification(title, { body: message, tag: key || item.id }); } catch { /* Browser notification unsupported */ }
+  }
+}
+function scanStockAlerts(list) {
+  const threshold = Math.max(0, Number(settings.low_stock_threshold) || 0);
+  for (const p of list) {
+    const previous = stockSnapshot.get(p.id);
+    if (Number(p.stock) <= threshold) {
+      if (Number(p.stock) === 0 && previous && previous.stock > 0) {
+        notifyUser('Out of stock', `${p.name} has run out.`, { level: 'critical', key: `stock-out-${p.id}` });
+      } else if (!previous || previous.stock > threshold) {
+        const out = Number(p.stock) === 0;
+        notifyUser(out ? 'Out of stock' : 'Low stock', `${p.name}: ${p.stock} remaining.`, { level: out ? 'critical' : 'warning', key: `stock-low-${p.id}` });
+      }
+    }
+    stockSnapshot.set(p.id, { stock: Number(p.stock) });
+  }
+}
+$('#notifications-btn').addEventListener('click', () => {
+  const panel = $('#notifications-panel');
+  panel.hidden = !panel.hidden;
+  $('#notifications-btn').setAttribute('aria-expanded', String(!panel.hidden));
+  if (!panel.hidden) renderNotifications();
+});
+$('#notification-close').addEventListener('click', () => { $('#notifications-panel').hidden = true; $('#notifications-btn').setAttribute('aria-expanded', 'false'); });
+$('#notification-sound').addEventListener('click', () => {
+  localStorage.setItem(SOUND_KEY, notificationSoundEnabled() ? 'off' : 'on');
+  renderNotifications();
+  playNotificationSound('success');
+});
+$('#notification-permission').addEventListener('click', async () => {
+  if (typeof Notification === 'undefined') return toast('Browser notifications are not supported here.');
+  const result = await Notification.requestPermission();
+  renderNotifications();
+  toast(result === 'granted' ? '✅ Browser alerts enabled' : 'Browser alerts were not enabled.');
+});
+$('#notification-read-all').addEventListener('click', () => {
+  localStorage.setItem(NOTIFICATION_KEY, JSON.stringify(readNotifications().map(n => ({ ...n, read: true }))));
+  renderNotifications();
+});
+$('#notification-clear').addEventListener('click', () => { localStorage.removeItem(NOTIFICATION_KEY); renderNotifications(); });
+$('#notification-list').addEventListener('click', e => {
+  const row = e.target.closest('[data-notification-id]');
+  if (!row) return;
+  const id = row.dataset.notificationId;
+  localStorage.setItem(NOTIFICATION_KEY, JSON.stringify(readNotifications().map(n => n.id === id ? { ...n, read: true } : n)));
+  renderNotifications();
+});
+renderNotifications();
 
 // ---------- Clock ----------
 setInterval(() => { $('#clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
@@ -101,8 +204,6 @@ async function loadConfig() {
   try {
     const cfg = await api('/api/config');
     settings = { ...settings, ...cfg.settings };
-    stripeConfigured = cfg.stripe;
-    stripePublishableKey = cfg.stripePublishableKey;
   } catch { /* keep defaults */ }
 }
 
@@ -156,10 +257,14 @@ $('#shift-confirm').addEventListener('click', async () => {
     if (mode === 'open') {
       shift = await api('/api/shifts/open', { method: 'POST', body: JSON.stringify({ openingFloat: parseFloat($('#opening-float').value) || 0 }) });
       toast(`🟢 Shift #${shift.id} opened`);
+      notifyUser('Shift opened', `Register ${shift.register} is ready.`, { level: 'success', key: `shift-open-${shift.id}` });
     } else {
       const result = await api('/api/shifts/close', { method: 'POST', body: JSON.stringify({ closingAmount: parseFloat($('#closing-amount').value) || 0 }) });
+      const closedId = shift?.id;
+      const closedRegister = shift?.register || terminalRegister();
       shift = null;
       toast(`🔴 Shift closed. Variance: ${money(result.variance)}`);
+      notifyUser('Shift closed', `Register ${closedRegister} was closed. Variance ${money(result.variance)}.`, { level: 'warning', key: `shift-close-${closedId}` });
     }
     $('#shift-modal').hidden = true;
     await refreshShift();
@@ -319,39 +424,19 @@ $('#checkout-btn').addEventListener('click', async () => {
   payMethod = 'cash';
   $$('.pay-btn').forEach(b => b.classList.toggle('active', b.dataset.pay === 'cash'));
   $('#cash-fields').style.display = '';
-  $('#card-fields').hidden = true;
   $('#tendered').value = '';
   $('#change').textContent = money(0);
   $('#checkout-error').hidden = true;
   $('#due').textContent = money(totals().total);
   openModal('#checkout-modal');
-  if (stripeConfigured && !stripe) await initStripe();
   setTimeout(() => $('#tendered').focus(), 50);
 });
 
 $$('.pay-btn').forEach(b => b.addEventListener('click', () => {
-  payMethod = b.dataset.pay;
-  $$('.pay-btn').forEach(x => x.classList.toggle('active', x === b));
-  $('#cash-fields').style.display = payMethod === 'cash' ? '' : 'none';
-  $('#card-fields').hidden = payMethod !== 'card';
-  if (payMethod === 'card') {
-    $('#card-note').textContent = stripeConfigured
-      ? 'Enter card details below (processed by Stripe).'
-      : 'Stripe is not configured on this server — the card payment will be simulated.';
-  }
+  payMethod = 'cash';
+  b.classList.add('active');
+  $('#cash-fields').style.display = '';
 }));
-
-async function initStripe() {
-  try {
-    const s = document.createElement('script');
-    s.src = 'https://js.stripe.com/v3/';
-    document.head.appendChild(s);
-    await new Promise((res, rej) => { s.onload = res; s.onerror = rej; });
-    stripe = window.Stripe(stripePublishableKey);
-    stripeCard = stripe.elements().create('card');
-    stripeCard.mount('#stripe-card-element');
-  } catch { stripe = null; }
-}
 
 function updateChange() {
   const tendered = parseFloat($('#tendered').value) || 0;
@@ -372,8 +457,8 @@ $('#complete-sale').addEventListener('click', async () => {
   const payload = {
     items: cartEntries().map(e => ({ id: e.product.id, qty: e.qty })),
     discountPct: t.discountPct,
-    payment: payMethod,
-    tendered: payMethod === 'cash' ? parseFloat($('#tendered').value) || 0 : null,
+    payment: 'cash',
+    tendered: parseFloat($('#tendered').value) || 0,
     customerId: cust?.id ?? null,
     redeemPoints: t.redeem,
     idempotencyKey: (crypto.randomUUID ? crypto.randomUUID() : `pos-${Date.now()}-${Math.random().toString(36).slice(2)}`),
@@ -383,21 +468,15 @@ $('#complete-sale').addEventListener('click', async () => {
     err.hidden = false;
     return;
   }
-  if (payMethod === 'card' && stripeConfigured && stripe) {
-    try {
-      const { clientSecret } = await api('/api/payments/intent', { method: 'POST', body: JSON.stringify({ amount: t.total }) });
-      const result = await stripe.confirmCardPayment(clientSecret, { payment_method: { card: stripeCard } });
-      if (result.error) { err.textContent = '⚠️ ' + result.error.message; err.hidden = false; return; }
-      payload.paymentIntentId = result.paymentIntent.id;
-    } catch (e) { err.textContent = '⚠️ ' + e.message; err.hidden = false; return; }
-  }
   try {
     lastSale = await api('/api/sales', { method: 'POST', body: JSON.stringify(payload) });
+    notifyUser('Sale completed', `Cash sale #${lastSale.id} · ${money(lastSale.total)}.`, { level: 'success', key: `sale-${lastSale.id}` });
     afterSale();
   } catch (e) {
     if (e.offline) {
       queueSale(payload);
       toast('📶 Offline — sale queued and will sync automatically');
+      notifyUser('Sale queued offline', 'It will sync when the connection returns.', { level: 'warning', key: `queued-${payload.idempotencyKey}` });
       cart = {}; $('#discount').value = 0; $('#redeem-points').checked = false;
       renderCart();
       $('#checkout-modal').hidden = true;
@@ -410,6 +489,7 @@ $('#complete-sale').addEventListener('click', async () => {
 
 async function afterSale() {
   products = await api('/api/products');
+  scanStockAlerts(products);
   customers = await api('/api/customers');
   cart = {};
   $('#discount').value = 0;
@@ -485,12 +565,29 @@ async function syncQueue() {
   updateQueueBadge();
   if (remaining.length < q.length) {
     products = await api('/api/products').catch(() => products);
+    scanStockAlerts(products);
     renderGrid();
     toast(`✅ Synced ${q.length - remaining.length} offline sale(s)`);
   }
-  if (remaining.length) toast(`⚠️ ${remaining.length} queued sale(s) need review or retry`);
+  if (remaining.length) {
+    toast(`⚠️ ${remaining.length} queued sale(s) need review or retry`);
+    notifyUser('Queued sales need attention', `${remaining.length} sale(s) could not sync. Open the queue badge to retry.`, { level: 'critical', key: 'queue-sync-failed' });
+  }
 }
-window.addEventListener('online', syncQueue);
+window.addEventListener('offline', () => notifyUser('Connection lost', 'New sales will be queued until the connection returns.', { level: 'critical', key: 'network-offline' }));
+window.addEventListener('online', () => {
+  notifyUser('Connection restored', 'Checking queued sales and refreshing stock.', { level: 'success', key: `network-online-${Math.floor(Date.now() / 60000)}` });
+  syncQueue();
+});
+setInterval(async () => {
+  if (!me || !navigator.onLine) return;
+  try {
+    products = await api('/api/products');
+    scanStockAlerts(products);
+    if ($('#view-pos').classList.contains('active')) renderGrid();
+    if ($('#view-inventory').classList.contains('active')) renderInventory();
+  } catch { /* next poll will retry */ }
+}, 60000);
 
 // ---------- Inventory ----------
 function renderInventory() {
@@ -509,6 +606,7 @@ function renderInventory() {
     if (!confirm('Remove this product from the catalogue?')) return;
     await api(`/api/products/${b.dataset.del}`, { method: 'DELETE' });
     products = await api('/api/products');
+    scanStockAlerts(products);
     renderCategories(); renderGrid(); renderInventory();
     toast('🗑 Product removed');
   }));
@@ -528,6 +626,16 @@ function openProductForm(p) {
   $('#cat-list').innerHTML = categories().filter(c => c !== 'All').map(c => `<option value="${esc(c)}">`).join('');
   openModal('#product-modal');
 }
+$('#restore-defaults-btn').addEventListener('click', async () => {
+  if (!confirm('Add any missing starter products and reactivate removed starter items? Existing prices and stock will be kept.')) return;
+  try {
+    const result = await api('/api/products/defaults', { method: 'POST', body: '{}' });
+    products = await api('/api/products');
+    scanStockAlerts(products);
+    renderCategories(); renderGrid(); renderInventory();
+    toast(`✅ Starter catalog ready: ${result.added} added, ${result.reactivated} reactivated. Edit prices in Inventory.`);
+  } catch (e) { toast('⚠️ ' + e.message); }
+});
 $('#add-product-btn').addEventListener('click', () => openProductForm(null));
 $('#product-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -537,6 +645,7 @@ $('#product-form').addEventListener('submit', async e => {
     if (id) await api(`/api/products/${id}`, { method: 'PUT', body: JSON.stringify(body) });
     else await api('/api/products', { method: 'POST', body: JSON.stringify(body) });
     products = await api('/api/products');
+    scanStockAlerts(products);
     $('#product-modal').hidden = true;
     renderCategories(); renderGrid(); renderInventory();
     toast('✅ Product saved');
@@ -645,6 +754,7 @@ async function saleAction(id, action) {
   try {
     const result = await api(`/api/sales/${id}/${action}`, { method: 'POST' });
     products = await api('/api/products');
+    scanStockAlerts(products);
     renderGrid(); renderSales();
     toast(result.status === 'refund_pending' ? '⚠️ Provider refund is pending' : `✅ Sale ${action === 'void' ? 'voided' : 'refunded'}`);
   } catch (e) { toast('⚠️ ' + e.message); }
@@ -657,9 +767,7 @@ async function renderSettings() {
     $('#s-' + k).value = settings[k];
   }
   $('#s-terminal_register').value = localStorage.getItem(REGISTER_KEY) || settings.register_name || 'Register 1';
-  $('#stripe-status').innerHTML = stripeConfigured
-    ? '✅ Stripe is configured — card payments are processed live.'
-    : '⚠️ Stripe is not configured (set <code>STRIPE_SECRET_KEY</code> &amp; <code>STRIPE_PUBLISHABLE_KEY</code> on the server). Card payments are simulated.';
+  $('#payment-status').textContent = '💵 Cash-only checkout is enabled. Card payments are disabled.';
   const users = await api('/api/users');
   $('#users-body').innerHTML = users.map(u => `<tr>
     <td><strong>${esc(u.username)}</strong></td><td>${esc(u.name)}</td>
@@ -759,6 +867,7 @@ $('#backup-import').addEventListener('change', async e => {
 // ---------- Init ----------
 async function refreshAll() {
   [products, customers] = await Promise.all([api('/api/products'), api('/api/customers')]);
+  scanStockAlerts(products);
   renderCategories(); renderGrid(); renderCart(); renderCustomerSelect();
   updateQueueBadge();
 }

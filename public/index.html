@@ -36,6 +36,19 @@
   </nav>
   <div class="top-actions">
     <span class="badge" id="shift-badge" title="Current shift">No shift</span>
+    <div class="notification-center">
+      <button type="button" class="notification-bell" id="notifications-btn" aria-label="Notifications" aria-expanded="false">🔔<span id="notifications-count" hidden>0</span></button>
+      <section class="notification-panel" id="notifications-panel" hidden aria-label="Notifications">
+        <div class="notification-panel-head"><strong>Notifications</strong><button type="button" class="icon-btn" id="notification-close" aria-label="Close">×</button></div>
+        <div class="notification-controls">
+          <button type="button" class="btn ghost small" id="notification-sound">🔊 Sound on</button>
+          <button type="button" class="btn ghost small" id="notification-permission">Enable browser alerts</button>
+          <button type="button" class="btn ghost small" id="notification-read-all">Mark read</button>
+          <button type="button" class="btn ghost small" id="notification-clear">Clear</button>
+        </div>
+        <div class="notification-list" id="notification-list"></div>
+      </section>
+    </div>
     <span class="badge" id="queue-badge" hidden title="Offline sales waiting to sync">📶 0 queued</span>
     <span class="user-chip" id="user-chip"></span>
     <button class="btn ghost small" id="logout-btn">Logout</button>
@@ -75,7 +88,7 @@
       <div class="row"><span>Points discount</span><span id="sum-points">−$0.00</span></div>
       <div class="row"><span>Tax</span><span id="sum-tax">$0.00</span></div>
       <div class="row total"><span>Total</span><span id="sum-total">$0.00</span></div>
-      <button class="btn primary big" id="checkout-btn" disabled>💳 Checkout</button>
+      <button class="btn primary big" id="checkout-btn" disabled>💵 Cash checkout</button>
     </div>
   </aside>
 </main>
@@ -84,7 +97,10 @@
 <main id="view-inventory" class="view">
   <div class="page-head">
     <h2>📦 Inventory <span class="muted" id="inv-count"></span></h2>
-    <div class="head-actions"><button class="btn primary admin-only" id="add-product-btn">＋ Add product</button></div>
+    <div class="head-actions">
+      <button class="btn ghost admin-only" id="restore-defaults-btn">↻ Add missing starter items</button>
+      <button class="btn primary admin-only" id="add-product-btn">＋ Add product</button>
+    </div>
   </div>
   <div class="table-wrap"><table>
     <thead><tr><th></th><th>Product</th><th>Category</th><th>Barcode</th><th>Price</th><th>Unit</th><th>Stock</th><th class="admin-only"></th></tr></thead>
@@ -158,8 +174,8 @@
         <label>New password (12+ characters) <input id="pw-next" type="password" required minlength="12" /></label>
         <button class="btn primary" type="submit">Change password</button>
       </form>
-      <h3 style="margin-top:24px">💳 Payments</h3>
-      <p id="stripe-status" class="muted">Checking…</p>
+      <h3 style="margin-top:24px">💵 Checkout</h3>
+      <p id="payment-status" class="muted">Cash-only checkout is enabled.</p>
       <h3 style="margin-top:24px">💾 Backup</h3>
       <div class="head-actions">
         <button class="btn ghost" id="backup-export">⬇ Export backup (JSON)</button>
@@ -206,18 +222,13 @@
   <div class="modal">
     <h2>💳 Checkout</h2>
     <div class="pay-toggle">
-      <button class="pay-btn active" data-pay="cash">💵 Cash</button>
-      <button class="pay-btn" data-pay="card">💳 Card</button>
+      <button class="pay-btn active" data-pay="cash" type="button">💵 Cash only</button>
     </div>
     <div class="row total"><span>Amount due</span><span id="due">$0.00</span></div>
     <div id="cash-fields">
       <label>Tendered <input id="tendered" type="number" min="0" step="0.01" placeholder="0.00" /></label>
       <div class="quick"><button data-amt="exact">Exact</button><button data-amt="5">$5</button><button data-amt="10">$10</button><button data-amt="20">$20</button><button data-amt="50">$50</button></div>
       <div class="row"><span>Change</span><span id="change">$0.00</span></div>
-    </div>
-    <div id="card-fields" hidden>
-      <p class="muted" id="card-note">Card payment will be processed securely.</p>
-      <div id="stripe-card-element"></div>
     </div>
     <p class="error" id="checkout-error" hidden></p>
     <div class="modal-actions">
