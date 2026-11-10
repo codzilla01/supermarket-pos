@@ -137,11 +137,16 @@
     <section class="card"><h3>🏪 Store</h3>
       <form id="store-form">
         <label>Store name <input id="s-store_name" /></label>
+        <label>Store address <input id="s-store_address" /></label>
+        <label>Store phone <input id="s-store_phone" /></label>
+        <label>VAT / tax registration number <input id="s-vat_number" /></label>
+        <label>Receipt footer <input id="s-receipt_footer" /></label>
         <label>Default tax rate (0–1, e.g. 0.09) <input id="s-tax_rate" type="number" step="0.01" min="0" max="1" /></label>
         <label>Currency symbol <input id="s-currency" maxlength="3" /></label>
         <label>Currency code (USD, EUR, GBP) <input id="s-currency_code" maxlength="3" /></label>
         <label>Low-stock threshold <input id="s-low_stock_threshold" type="number" min="0" /></label>
-        <label>Register name <input id="s-register_name" /></label>
+        <label>Default register name <input id="s-register_name" /></label>
+        <label>This terminal/register ID <input id="s-terminal_register" placeholder="e.g. Register 1" /></label>
         <label>Points per $1 spent <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
         <label>Point value in $ <input id="s-points_value" type="number" step="0.001" min="0" /></label>
         <button class="btn primary" type="submit">Save settings</button>
@@ -150,7 +155,7 @@
     <section class="card"><h3>🔐 My password</h3>
       <form id="password-form">
         <label>Current password <input id="pw-current" type="password" required /></label>
-        <label>New password <input id="pw-next" type="password" required /></label>
+        <label>New password (12+ characters) <input id="pw-next" type="password" required minlength="12" /></label>
         <button class="btn primary" type="submit">Change password</button>
       </form>
       <h3 style="margin-top:24px">💳 Payments</h3>
@@ -170,7 +175,7 @@
     <form id="user-form" class="inline-form">
       <input id="u-username" placeholder="Username" required />
       <input id="u-name" placeholder="Display name" />
-      <input id="u-password" type="password" placeholder="Password (min 6)" required />
+      <input id="u-password" type="password" placeholder="Temporary password (min 12)" minlength="12" required />
       <select id="u-role"><option value="cashier">Cashier</option><option value="admin">Admin</option></select>
       <button class="btn primary" type="submit">＋ Add user</button>
     </form>

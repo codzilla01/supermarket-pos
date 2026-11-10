@@ -14,13 +14,13 @@ Open http://localhost:3000 and sign in with the seeded admin account:
 |---|---|---|
 | `admin` | `admin123` | Admin (full access) |
 
-> ⚠️ **Change the admin password immediately** (Settings → My password), then create cashier accounts for your staff.
+> ⚠️ The seeded admin must change the starter password at first login (12+ characters) before accessing the POS. Then create cashier accounts and have each cashier rotate their temporary password.
 
 ## Features
 
-- **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, store default plus per-product tax rates, printable receipts; sale retries use idempotency keys
+- **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, store default plus per-product tax rates, configurable receipt address/phone/VAT number/footer, 80 mm thermal-print layout; sale retries use idempotency keys
 - **Users & roles** — Admin (inventory, settings, users, voids/refunds, backups) vs Cashier (selling only); scrypt password hashing, 12-hour sessions, login rate limiting
-- **Shifts** — open/close with opening float, expected-vs-counted cash reconciliation, per-shift history
+- **Shifts** — independent open/close sessions and cash reconciliation per named register; multiple browser terminals can connect to the same POS server
 - **Loyalty** — customers with phone numbers, earn points per dollar spent, redeem points at checkout
 - **Returns** — void/refund actions restore stock and loyalty points; with Stripe enabled, full card refunds are sent to Stripe with an idempotency key. Simulated-card and legacy sales require manual provider reconciliation.
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
@@ -46,11 +46,13 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 - All data lives in a single SQLite file (`pos.db`, WAL mode). Back it up by copying the file, or use **Settings → Export backup** for a portable JSON snapshot.
 - The old demo `data.json` format is no longer used.
 
-## Tests
+## Tests and health check
 
 ```bash
-npm test   # spins up a throwaway server + temp DB and exercises the API
+npm test   # isolated API tests using a temporary database
 ```
+
+The unauthenticated `GET /healthz` endpoint returns `{ "status": "ok" }` after confirming SQLite responds; CI runs the same suite on pushes and pull requests.
 
 ## Before going live
 
@@ -59,5 +61,5 @@ This remains a production-oriented baseline, not a certified retail deployment. 
 ## Deployment notes
 
 - Run behind a reverse proxy (nginx/Caddy) with **HTTPS** — session cookies are `HttpOnly; SameSite=Lax; Secure` by default. Set `POS_COOKIE_SECURE=false` only for local plain-HTTP development.
-- For multi-register setups, run one instance per register against a shared database volume, or extend the API with a sync layer.
+- Multiple named registers may use the same running POS server and database; set a distinct terminal/register ID in Settings on each browser. Do not run multiple Node instances against a shared SQLite file—use a dedicated database/sync service before horizontal scaling.
 - Hardware: receipt printing uses the browser print dialog (thermal-printer friendly CSS included); barcode scanners in keyboard-wedge mode work without drivers.

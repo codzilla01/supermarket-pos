@@ -4,7 +4,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let me = null;               // {id, username, role, name}
-let settings = { store_name: 'FreshMart', tax_rate: '0.08', currency: '$', currency_code: 'USD', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
+let settings = { store_name: 'FreshMart', store_address: '', store_phone: '', vat_number: '', receipt_footer: 'Thank you for shopping!', tax_rate: '0.08', currency: '$', currency_code: 'USD', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
 let products = [];
 let customers = [];
 let cart = {};               // productId -> qty
@@ -20,11 +20,14 @@ let lastSale = null;
 const money = n => settings.currency + Number(n || 0).toFixed(2);
 const taxRate = () => Math.min(1, Math.max(0, parseFloat(settings.tax_rate) || 0));
 const pointsValue = () => Math.max(0, parseFloat(settings.points_value) || 0);
+const REGISTER_KEY = 'pos_terminal_register';
+const terminalRegister = () => localStorage.getItem(REGISTER_KEY) || settings.register_name || 'Register 1';
 
 async function api(path, opts = {}) {
   let res;
   try {
-    res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    const headers = { 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(), ...(opts.headers || {}) };
+    res = await fetch(path, { ...opts, headers });
   } catch (e) {
     throw Object.assign(new Error('Network error'), { offline: true });
   }
@@ -427,7 +430,10 @@ function showReceipt(sale) {
       }, {})).map(([rate, amount]) => `<div class="r-row"><span>Tax (${(Number(rate) * 100).toFixed(0)}%)</span><span>${money(amount)}</span></div>`).join('')
     : `<div class="r-row"><span>Tax</span><span>${money(sale.tax)}</span></div>`;
   $('#receipt-body').innerHTML = `
-    <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(settings.register_name)}</div>
+    <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(terminalRegister())}</div>
+    ${settings.store_address ? `<div>${esc(settings.store_address)}</div>` : ''}
+    ${settings.store_phone ? `<div>${esc(settings.store_phone)}</div>` : ''}
+    ${settings.vat_number ? `<div>VAT: ${esc(settings.vat_number)}</div>` : ''}
     <div>Sale #${sale.id} · ${new Date(sale.date).toLocaleString()}</div>
     <div>Cashier: ${esc(me.name || me.username)}</div></div>
     ${rows}
@@ -439,7 +445,7 @@ function showReceipt(sale) {
     <div class="r-row"><span>Payment</span><span>${sale.payment === 'card' ? '💳 Card' : '💵 Cash'}</span></div>
     ${sale.tendered != null ? `<div class="r-row"><span>Tendered</span><span>${money(sale.tendered)}</span></div><div class="r-row"><span>Change</span><span>${money(sale.change)}</span></div>` : ''}
     ${sale.points_earned ? `<div class="r-row"><span>⭐ Points earned</span><span>+${sale.points_earned}</span></div>` : ''}
-    <div class="r-foot">Thank you for shopping with us! 🥦</div>`;
+    <div class="r-foot">${esc(settings.receipt_footer || 'Thank you for shopping!')}</div>`;
   openModal('#receipt-modal');
 }
 $('#print-receipt').addEventListener('click', () => window.print());
@@ -647,9 +653,10 @@ async function saleAction(id, action) {
 // ---------- Settings ----------
 async function renderSettings() {
   if (me.role !== 'admin') return;
-  for (const k of ['store_name', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) {
+  for (const k of ['store_name', 'store_address', 'store_phone', 'vat_number', 'receipt_footer', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) {
     $('#s-' + k).value = settings[k];
   }
+  $('#s-terminal_register').value = localStorage.getItem(REGISTER_KEY) || settings.register_name || 'Register 1';
   $('#stripe-status').innerHTML = stripeConfigured
     ? '✅ Stripe is configured — card payments are processed live.'
     : '⚠️ Stripe is not configured (set <code>STRIPE_SECRET_KEY</code> &amp; <code>STRIPE_PUBLISHABLE_KEY</code> on the server). Card payments are simulated.';
@@ -669,11 +676,21 @@ async function renderSettings() {
 $('#store-form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = {};
-  for (const k of ['store_name', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) body[k] = $('#s-' + k).value;
+  for (const k of ['store_name', 'store_address', 'store_phone', 'vat_number', 'receipt_footer', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value']) body[k] = $('#s-' + k).value;
+  const nextTerminal = $('#s-terminal_register').value.trim();
+  const effectiveNext = nextTerminal || $('#s-register_name').value.trim() || 'Register 1';
+  if (shift && effectiveNext !== terminalRegister()) {
+    toast('⚠️ Close this register shift before changing its ID');
+    return;
+  }
   try {
     settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+    if (nextTerminal) localStorage.setItem(REGISTER_KEY, nextTerminal);
+    else localStorage.removeItem(REGISTER_KEY);
+    await refreshShift();
     showApp();
     renderCart(); renderGrid();
+    if (!shift) await ensureShift();
     toast('✅ Settings saved');
   } catch (err) { toast('⚠️ ' + err.message); }
 });
