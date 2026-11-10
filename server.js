@@ -88,6 +88,7 @@ function requireAdmin(user, res) {
 const num = (v, d = 0) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
 const int = (v, d = 0) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; };
 const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
+const registerFor = req => str(req.headers['x-pos-register'], 60) || getSettings(db).register_name;
 const round2 = n => Math.round(n * 100) / 100;
 
 // ---------- Stripe (optional) ----------
@@ -257,23 +258,23 @@ async function handleApi(req, res, url) {
 
   // ----- Shifts -----
   if (p === '/api/shifts/current' && method === 'GET') {
-    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
+    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
     return sendJson(res, 200, { shift: shift || null });
   }
   if (p === '/api/shifts' && method === 'GET') {
     return sendJson(res, 200, db.prepare('SELECT s.*, u.name AS cashier_name FROM shifts s LEFT JOIN users u ON u.id = s.cashier_id ORDER BY s.id DESC LIMIT 100').all());
   }
   if (p === '/api/shifts/open' && method === 'POST') {
-    const open = db.prepare("SELECT id FROM shifts WHERE status = 'open'").get();
-    if (open) return sendJson(res, 409, { error: 'A shift is already open' });
+    const register = registerFor(req);
+    const open = db.prepare("SELECT id FROM shifts WHERE status = 'open' AND register = ?").get(register);
+    if (open) return sendJson(res, 409, { error: `A shift is already open on ${register}` });
     const b = await readBody(req);
-    const settings = getSettings(db);
     const info = db.prepare('INSERT INTO shifts(cashier_id, register, opening_float) VALUES(?, ?, ?)')
-      .run(user.id, str(b.register, 60) || settings.register_name, Math.max(0, num(b.openingFloat)));
+      .run(user.id, register, Math.max(0, num(b.openingFloat)));
     return sendJson(res, 201, db.prepare('SELECT * FROM shifts WHERE id = ?').get(info.lastInsertRowid));
   }
   if (p === '/api/shifts/close' && method === 'POST') {
-    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
+    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
     if (!shift) return sendJson(res, 404, { error: 'No open shift' });
     const b = await readBody(req);
     const closing = Math.max(0, num(b.closingAmount));
@@ -304,8 +305,8 @@ async function handleApi(req, res, url) {
     const items = Array.isArray(b.items) ? b.items : [];
     if (!items.length) return sendJson(res, 400, { error: 'Cart is empty' });
 
-    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' ORDER BY id DESC LIMIT 1").get();
-    if (!shift) return sendJson(res, 409, { error: 'No open shift. Open a shift before selling.' });
+    const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
+    if (!shift) return sendJson(res, 409, { error: 'No open shift for this register. Open a shift before selling.' });
 
     const settings = getSettings(db);
     const taxRate = Math.min(1, Math.max(0, num(settings.tax_rate, 0.08)));
@@ -515,6 +516,8 @@ async function handleApi(req, res, url) {
         if (String(b.password).length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `Password min. ${MIN_PASSWORD_LENGTH} characters` });
         db.prepare('UPDATE users SET role=?, name=?, active=?, password_hash=?, must_change_password=1 WHERE id=?')
           .run(next.role, next.name, next.active, auth.hashPassword(b.password), target.id);
+        db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?')
+          .run(target.id, auth.parseCookies(req).pos_session || '');
       } else {
         db.prepare('UPDATE users SET role=?, name=?, active=? WHERE id=?').run(next.role, next.name, next.active, target.id);
       }
@@ -532,6 +535,7 @@ async function handleApi(req, res, url) {
     if (!auth.verifyPassword(b.current || '', me.password_hash)) return sendJson(res, 401, { error: 'Current password is incorrect' });
     if (String(b.next || '').length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `New password min. ${MIN_PASSWORD_LENGTH} characters` });
     db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(auth.hashPassword(b.next), user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(user.id, auth.parseCookies(req).pos_session || '');
     return sendJson(res, 200, { ok: true });
   }
 
@@ -540,9 +544,10 @@ async function handleApi(req, res, url) {
   if (p === '/api/settings' && method === 'PUT') {
     if (!requireAdmin(user, res)) return;
     const b = await readBody(req);
-    const allowed = ['store_name', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value'];
+    const allowed = ['store_name', 'store_address', 'store_phone', 'vat_number', 'receipt_footer', 'tax_rate', 'currency', 'currency_code', 'low_stock_threshold', 'register_name', 'points_per_dollar', 'points_value'];
+    const limits = { store_address: 200, store_phone: 40, vat_number: 40, receipt_footer: 200 };
     const obj = {};
-    for (const k of allowed) if (b[k] !== undefined) obj[k] = str(b[k], 60);
+    for (const k of allowed) if (b[k] !== undefined) obj[k] = str(b[k], limits[k] || 60);
     if (obj.tax_rate !== undefined) {
       const t = num(obj.tax_rate, -1);
       if (t < 0 || t > 1) return sendJson(res, 400, { error: 'Tax rate must be between 0 and 1 (e.g. 0.09)' });
@@ -616,6 +621,10 @@ const server = http.createServer(async (req, res) => {
   securityHeaders(res);
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
+    if (url.pathname === '/healthz' && req.method === 'GET') {
+      db.prepare('SELECT 1').get();
+      return sendJson(res, 200, { status: 'ok' });
+    }
     if (url.pathname.startsWith('/api/')) {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
@@ -641,7 +650,7 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`🛒 FreshMart POS (production) running at http://${HOST}:${PORT}`);
-    console.log(`   Default admin login: admin / admin123  (change it in Settings!)`);
+    console.log(`   Default admin login: admin / admin123  (password rotation required at first login)`);
     console.log(`   Stripe payments: ${STRIPE_SECRET_KEY ? 'ENABLED' : 'not configured (card payments simulated)'}`);
   });
 }

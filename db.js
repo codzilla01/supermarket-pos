@@ -46,6 +46,10 @@ const SEED_PRODUCTS = [
 
 const DEFAULT_SETTINGS = {
   store_name: 'FreshMart',
+  store_address: '',
+  store_phone: '',
+  vat_number: '',
+  receipt_footer: 'Thank you for shopping!',
   tax_rate: '0.08',
   currency: '$',
   currency_code: 'USD',
@@ -171,6 +175,11 @@ function migrate(db) {
       UPDATE users SET must_change_password = 1 WHERE username = 'admin';
     `);
     db.prepare('PRAGMA user_version = 3').run();
+    version = 3;
+  }
+  if (version < 4) {
+    db.exec("CREATE UNIQUE INDEX idx_shifts_one_open_per_register ON shifts(register) WHERE status = 'open'");
+    db.prepare('PRAGMA user_version = 4').run();
   }
 }
 

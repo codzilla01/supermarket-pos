@@ -155,8 +155,10 @@ tr:last-child td { border-bottom: none; }
   .two-col { grid-template-columns: 1fr; }
 }
 @media print {
+  @page { size: 80mm auto; margin: 0; }
+  html, body { width: 80mm; margin: 0 !important; padding: 0 !important; }
   body * { visibility: hidden; }
   #receipt-body, #receipt-body * { visibility: visible; }
-  #receipt-body { position: absolute; inset: 0; padding: 20px; }
+  #receipt-body { position: absolute; left: 0; top: 0; width: 72mm; padding: 4mm; box-sizing: border-box; }
   .no-print { display: none !important; }
 }

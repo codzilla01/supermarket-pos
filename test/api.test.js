@@ -15,10 +15,10 @@ let server;
 let cookie = '';
 let cookieHeader = '';
 
-async function req(method, p, body, useCookie = true) {
+async function req(method, p, body, useCookie = true, register = 'Register 1') {
   const res = await fetch(BASE + p, {
     method,
-    headers: { 'Content-Type': 'application/json', ...(useCookie && cookie ? { Cookie: cookie } : {}) },
+    headers: { 'Content-Type': 'application/json', 'X-POS-Register': register, ...(useCookie && cookie ? { Cookie: cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
@@ -43,6 +43,12 @@ before(async () => {
 after(() => {
   server.kill();
   for (const f of [tmpDb, tmpDb + '-wal', tmpDb + '-shm']) { try { fs.unlinkSync(f); } catch { /* ignore */ } }
+});
+
+test('health endpoint reports application and database readiness', async () => {
+  const r = await fetch(BASE + '/healthz');
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { status: 'ok' });
 });
 
 test('unauthenticated API access is rejected', async () => {
@@ -115,6 +121,20 @@ test('product tax override is applied by the server', async () => {
   assert.equal(sale.data.items[0].tax_rate, 0.21);
 });
 
+test('registers maintain separate open shifts', async () => {
+  const first = await req('GET', '/api/shifts/current');
+  assert.equal(first.data.shift.register, 'Register 1');
+  const opened = await req('POST', '/api/shifts/open', { openingFloat: 20 }, true, 'Register 2');
+  assert.equal(opened.status, 201);
+  const second = await req('GET', '/api/shifts/current', null, true, 'Register 2');
+  assert.equal(second.data.shift.id, opened.data.id);
+  assert.equal(second.data.shift.register, 'Register 2');
+  const closed = await req('POST', '/api/shifts/close', { closingAmount: 20 }, true, 'Register 2');
+  assert.equal(closed.status, 200);
+  const firstStillOpen = await req('GET', '/api/shifts/current');
+  assert.equal(firstStillOpen.data.shift.register, 'Register 1');
+});
+
 test('cashier cannot manage users (admin only)', async () => {
   const starterPassword = 'cashier-test-password-2026';
   await req('POST', '/api/users', { username: 'cashier1', password: starterPassword, role: 'cashier', name: 'Test Cashier' });
@@ -136,17 +156,26 @@ test('close shift reports variance', async () => {
 
 test('settings update persists', async () => {
 await req('POST', '/api/login', { username: 'admin', password: 'freshmart-admin-test-2026' }, false);
-  const r = await req('PUT', '/api/settings', { tax_rate: '0.21', currency_code: 'EUR' });
+  const r = await req('PUT', '/api/settings', { tax_rate: '0.21', currency_code: 'EUR', store_address: '42 Sample Street', vat_number: 'NL123456789B01' });
   assert.equal(r.status, 200);
   assert.equal(r.data.tax_rate, '0.21');
+  assert.equal(r.data.store_address, '42 Sample Street');
+  assert.equal(r.data.vat_number, 'NL123456789B01');
   assert.equal(r.data.currency_code, 'EUR');
   const unsupported = await req('PUT', '/api/settings', { currency_code: 'XYZ' });
   assert.equal(unsupported.status, 400);
 });
 
-test('backup export contains data', async () => {
+test('backup export and import preserve products, tax rates, sales, and shifts', async () => {
   const r = await req('GET', '/api/backup');
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.data.products));
   assert.ok(Array.isArray(r.data.sales));
+  assert.ok(Array.isArray(r.data.shifts));
+  const restored = await req('POST', '/api/backup/import', r.data);
+  assert.equal(restored.status, 200);
+  const products = await req('GET', '/api/products');
+  assert.equal(products.data.find(p => p.name === 'Tax test item').tax_rate, 0.21);
+  const shifts = await req('GET', '/api/shifts');
+  assert.ok(shifts.data.length >= 2);
 });
