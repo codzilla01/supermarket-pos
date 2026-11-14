@@ -19,7 +19,7 @@
     <label>Password <input id="login-pass" type="password" autocomplete="current-password" required /></label>
     <p class="error" id="login-error" hidden></p>
     <button class="btn primary big" type="submit">Sign in</button>
-    <p class="muted small">Default: <code>admin</code> / <code>admin123</code> — change after first login.</p>
+    <p class="muted small">Use the account details provided by your software administrator.</p>
   </form>
 </div>
 
@@ -33,6 +33,8 @@
     <button class="tab" data-view="sales">📊 Sales</button>
     <button class="tab" data-view="customers">👥 Customers</button>
     <button class="tab admin-only" data-view="settings">⚙️ Settings</button>
+    <button class="tab subscription-tab" data-view="subscription">💳 Subscription</button>
+    <button class="tab developer-only" data-view="developer">🛡️ Developer Console</button>
   </nav>
   <div class="top-actions">
     <span class="badge" id="shift-badge" title="Current shift">No shift</span>
@@ -159,12 +161,12 @@
         <label>Receipt footer <input id="s-receipt_footer" /></label>
         <label>Default tax rate (0–1, e.g. 0.09) <input id="s-tax_rate" type="number" step="0.01" min="0" max="1" /></label>
         <label>Currency symbol <input id="s-currency" maxlength="3" /></label>
-        <label>Currency code (USD, EUR, GBP) <input id="s-currency_code" maxlength="3" /></label>
+        <label>Currency code (USD, EUR, GBP, EGP) <input id="s-currency_code" maxlength="3" /></label>
         <label>Low-stock threshold <input id="s-low_stock_threshold" type="number" min="0" /></label>
         <label>Default register name <input id="s-register_name" /></label>
         <label>This terminal/register ID <input id="s-terminal_register" placeholder="e.g. Register 1" /></label>
-        <label>Points per $1 spent <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
-        <label>Point value in $ <input id="s-points_value" type="number" step="0.001" min="0" /></label>
+        <label>Points per store-currency unit spent <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
+        <label>Point value in store currency <input id="s-points_value" type="number" step="0.001" min="0" /></label>
         <button class="btn primary" type="submit">Save settings</button>
       </form>
     </section>
@@ -197,6 +199,48 @@
     </form>
   </section>
 </main>
+
+<!-- ============ SUBSCRIPTION STATUS ============ -->
+<main id="view-subscription" class="view">
+  <section class="subscription-hero card">
+    <div class="subscription-icon">◈</div>
+    <p class="eyebrow">SERVICE PLAN</p>
+    <h2 id="subscription-title">Subscription status</h2>
+    <p id="subscription-summary" class="muted">Checking your license…</p>
+    <div class="subscription-facts" id="subscription-facts"></div>
+    <p class="subscription-note">Payments are recorded manually by the software provider. To renew or restore access, contact your provider and quote your store name and subscription status.</p>
+  </section>
+</main>
+
+<!-- ============ DEVELOPER CONSOLE ============ -->
+<main id="view-developer" class="view">
+  <div class="page-head">
+    <div><p class="eyebrow">PLATFORM OPERATIONS</p><h2>🛡️ Developer control center</h2><p class="muted">Subscription lifecycle, activation tracking and local service health.</p></div>
+    <button class="btn ghost" id="dev-refresh">↻ Refresh</button>
+  </div>
+  <div class="dev-metrics" id="dev-metrics"></div>
+  <div class="dev-grid">
+    <section class="card dev-license-card">
+      <div class="section-kicker">CURRENT INSTALLATION</div>
+      <div class="dev-license-head"><div><h3 id="dev-store-name">Store subscription</h3><span id="dev-license-status" class="license-pill">Loading</span></div><div class="license-glyph">◈</div></div>
+      <div class="license-details" id="dev-license-details"></div>
+      <form id="dev-renew-form" class="dev-action-form">
+        <h4>Record payment &amp; activate annual plan</h4>
+        <label>Payment / receipt reference<input id="dev-payment-ref" required maxlength="120" placeholder="Bank transfer ref, receipt #…" /></label>
+        <button class="btn primary" type="submit">Activate / extend by 1 year</button>
+      </form>
+      <div class="dev-actions">
+        <button class="btn danger" id="dev-suspend">Suspend service</button>
+        <button class="btn ghost" id="dev-restore">Restore before expiry</button>
+      </div>
+    </section>
+    <section class="card dev-timeline-card">
+      <div class="dev-section-head"><div><div class="section-kicker">AUDIT TRAIL</div><h3>Activation activity</h3></div><span class="muted small">Latest 100 events</span></div>
+      <div id="dev-events" class="dev-events"></div>
+    </section>
+  </div>
+  <p class="dev-scope-note">This console administers the subscription for this installation and its local SQLite database. It does not remotely aggregate or control other independent installations.</p>
+</main>
 </div>
 
 <!-- ============ SHIFT MODAL ============ -->
@@ -204,11 +248,11 @@
   <div class="modal">
     <h2 id="shift-modal-title">Open shift</h2>
     <div id="shift-open-fields">
-      <label>Opening cash float ($) <input id="opening-float" type="number" min="0" step="0.01" value="100" /></label>
+      <label>Opening cash float (<span class="currency-unit">store currency</span>) <input id="opening-float" type="number" min="0" step="0.01" value="100" /></label>
     </div>
     <div id="shift-close-fields" hidden>
       <div class="row"><span>Expected cash</span><span id="expected-cash">$0.00</span></div>
-      <label>Counted cash ($) <input id="closing-amount" type="number" min="0" step="0.01" /></label>
+      <label>Counted cash (<span class="currency-unit">store currency</span>) <input id="closing-amount" type="number" min="0" step="0.01" /></label>
       <div class="row"><span>Variance</span><span id="variance">$0.00</span></div>
     </div>
     <div class="modal-actions">
@@ -227,7 +271,7 @@
     <div class="row total"><span>Amount due</span><span id="due">$0.00</span></div>
     <div id="cash-fields">
       <label>Tendered <input id="tendered" type="number" min="0" step="0.01" placeholder="0.00" /></label>
-      <div class="quick"><button data-amt="exact">Exact</button><button data-amt="5">$5</button><button data-amt="10">$10</button><button data-amt="20">$20</button><button data-amt="50">$50</button></div>
+      <div class="quick"><button data-amt="exact">Exact</button><button data-amt="50">50</button><button data-amt="100">100</button><button data-amt="200">200</button><button data-amt="500">500</button></div>
       <div class="row"><span>Change</span><span id="change">$0.00</span></div>
     </div>
     <p class="error" id="checkout-error" hidden></p>
