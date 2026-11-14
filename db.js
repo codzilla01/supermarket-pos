@@ -51,8 +51,8 @@ const DEFAULT_SETTINGS = {
   vat_number: '',
   receipt_footer: 'Thank you for shopping!',
   tax_rate: '0.08',
-  currency: '$',
-  currency_code: 'USD',
+  currency: 'ج.م',
+  currency_code: 'EGP',
   low_stock_threshold: '10',
   register_name: 'Register 1',
   points_per_dollar: '1',
@@ -180,10 +180,35 @@ function migrate(db) {
   if (version < 4) {
     db.exec("CREATE UNIQUE INDEX idx_shifts_one_open_per_register ON shifts(register) WHERE status = 'open'");
     db.prepare('PRAGMA user_version = 4').run();
+    version = 4;
+  }
+  if (version < 5) {
+    db.exec(`
+      CREATE TABLE subscriptions (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        status TEXT NOT NULL CHECK(status IN ('trial', 'active', 'suspended', 'expired')),
+        plan TEXT NOT NULL DEFAULT 'trial',
+        started_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        activated_at TEXT,
+        last_activity_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE subscription_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        details TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_subscription_events_created ON subscription_events(created_at);
+    `);
+    db.prepare('PRAGMA user_version = 5').run();
   }
 }
 
-function seed(db, hashPassword) {
+function seed(db, hashPassword, initialAdminPassword) {
+  if (typeof initialAdminPassword !== 'string' || initialAdminPassword.length < 16) throw new Error('A unique initial admin secret of at least 16 characters is required');
   // Settings
   const upsertSetting = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) upsertSetting.run(k, v);
@@ -192,7 +217,16 @@ function seed(db, hashPassword) {
   const admin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
   if (!admin) {
     db.prepare('INSERT INTO users(username, password_hash, role, name, must_change_password) VALUES(?, ?, ?, ?, 1)')
-      .run('admin', hashPassword('admin123'), 'admin', 'Store Manager');
+      .run('admin', hashPassword(initialAdminPassword), 'admin', 'Store Manager');
+  }
+
+  // A new installation starts with a clearly-labeled 14-day evaluation period.
+  if (!db.prepare('SELECT id FROM subscriptions WHERE id = 1').get()) {
+    const now = new Date();
+    const expiry = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+    db.prepare(`INSERT INTO subscriptions(id, status, plan, started_at, expires_at, updated_at)
+      VALUES(1, 'trial', 'trial', ?, ?, ?)`).run(now.toISOString(), expiry.toISOString(), now.toISOString());
+    db.prepare(`INSERT INTO subscription_events(action, details, actor) VALUES('trial_started', '14-day evaluation period created', 'system')`).run();
   }
 
   // Products (only if empty)

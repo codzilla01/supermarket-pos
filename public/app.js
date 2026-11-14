@@ -4,7 +4,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let me = null;               // {id, username, role, name}
-let settings = { store_name: 'FreshMart', store_address: '', store_phone: '', vat_number: '', receipt_footer: 'Thank you for shopping!', tax_rate: '0.08', currency: '$', currency_code: 'USD', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
+let settings = { store_name: 'FreshMart', store_address: '', store_phone: '', vat_number: '', receipt_footer: 'Thank you for shopping!', tax_rate: '0.08', currency: 'ج.م', currency_code: 'EGP', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
 let products = [];
 let customers = [];
 let cart = {};               // productId -> qty
@@ -31,6 +31,7 @@ async function api(path, opts = {}) {
   if (res.status === 401) { showLogin(); throw new Error('Session expired'); }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 402 && me) { me.subscriptionStatus = err.subscription?.status || 'expired'; showApp(); }
     throw new Error(err.error || `Request failed (${res.status})`);
   }
   return res.json();
@@ -164,12 +165,88 @@ function showApp() {
   $('#login-screen').hidden = true;
   $('#app').hidden = false;
   const admin = me.role === 'admin';
+  const developer = me.role === 'developer';
+  const blocked = !developer && !['trial', 'active'].includes(me.subscriptionStatus || 'trial');
   $$('.admin-only').forEach(el => { el.style.display = admin ? '' : 'none'; });
-  $('#user-chip').textContent = `${me.name || me.username} (${me.role})`;
+  $$('.developer-only').forEach(el => { el.style.display = developer ? '' : 'none'; });
+  $$('.subscription-tab').forEach(el => { el.style.display = developer ? 'none' : ''; });
+  $$('.tab[data-view="pos"], .tab[data-view="inventory"], .tab[data-view="sales"], .tab[data-view="customers"]').forEach(el => { el.style.display = blocked || developer ? 'none' : ''; });
+  $('#shift-badge').style.display = blocked || developer ? 'none' : '';
+  $('#notifications-btn').style.display = developer ? 'none' : '';
+  $('#queue-badge').style.display = developer ? 'none' : '';
+  $('#user-chip').textContent = `${me.name || me.username} (${developer ? 'Developer' : (me.role === 'admin' ? 'Admin' : 'Cashier')})`;
   $('#brand-name').textContent = settings.store_name;
   $('#login-store').textContent = settings.store_name;
+  $$('.currency-unit').forEach(el => { el.textContent = settings.currency_code || 'EGP'; });
   document.title = `${settings.store_name} — Supermarket POS`;
+  const view = developer ? 'developer' : (blocked ? 'subscription' : 'pos');
+  $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
+  if (developer) renderDeveloperDashboard();
+  if (view === 'subscription') renderSubscriptionStatus();
 }
+
+function fmtDate(value) {
+  return value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+}
+function subscriptionLabel(status) {
+  return ({ trial: 'Trial', active: 'Active', suspended: 'Suspended', expired: 'Expired' })[status] || status;
+}
+async function renderSubscriptionStatus() {
+  try {
+    const sub = await api('/api/subscription');
+    $('#subscription-title').textContent = sub.status === 'active' ? 'Your annual plan is active' : (sub.status === 'trial' ? 'Evaluation period' : 'Service access is paused');
+    $('#subscription-summary').textContent = sub.status === 'trial'
+      ? `${sub.days_remaining} day${sub.days_remaining === 1 ? '' : 's'} left in your evaluation period.`
+      : (sub.status === 'active' ? `${sub.days_remaining} days remaining on your ${sub.plan} subscription.` : `Your subscription is ${subscriptionLabel(sub.status).toLowerCase()}. Contact your software provider to restore access.`);
+    $('#subscription-facts').innerHTML = `<span class="license-pill ${esc(sub.status)}">${esc(subscriptionLabel(sub.status))}</span><div><small>Plan</small><strong>${esc(sub.plan)}</strong></div><div><small>Valid through</small><strong>${esc(fmtDate(sub.expires_at))}</strong></div><div><small>Store</small><strong>${esc(sub.store_name)}</strong></div>`;
+  } catch (err) { $('#subscription-summary').textContent = err.message; }
+}
+async function renderDeveloperDashboard() {
+  if (me?.role !== 'developer') return;
+  try {
+    const data = await api('/api/developer/dashboard');
+    const metrics = [
+      ['TODAY’S SALES', data.metrics.sales_today], ['TODAY’S REVENUE', `${settings.currency}${Number(data.metrics.revenue_today).toFixed(2)}`],
+      ['ACTIVE TEAM', data.metrics.users_active], ['PRODUCTS', data.metrics.product_count], ['LIFETIME SALES', data.metrics.sales_total],
+    ];
+    $('#dev-metrics').innerHTML = metrics.map(([label, value]) => `<article class="dev-metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join('');
+    $('#dev-store-name').textContent = data.store_name;
+    $('#dev-license-status').textContent = subscriptionLabel(data.status);
+    $('#dev-license-status').className = `license-pill ${esc(data.status)}`;
+    $('#dev-license-details').innerHTML = `
+      <div><small>Plan</small><strong>${esc(data.plan)}</strong></div>
+      <div><small>Started</small><strong>${esc(fmtDate(data.started_at))}</strong></div>
+      <div><small>Expires</small><strong>${esc(fmtDate(data.expires_at))}</strong></div>
+      <div><small>Days remaining</small><strong>${esc(data.days_remaining)}</strong></div>
+      <div><small>Activated</small><strong>${esc(fmtDate(data.activated_at))}</strong></div>
+      <div><small>Last activity</small><strong>${esc(fmtDate(data.last_activity_at))}</strong></div>`;
+    $('#dev-events').innerHTML = data.events.length ? data.events.map(event => `<article class="dev-event"><span class="event-dot ${event.action === 'suspended' ? 'warning' : ''}"></span><div><strong>${esc(event.action.replaceAll('_', ' '))}</strong><p>${esc(event.details)}</p><small>${esc(event.actor)} · ${esc(fmtDate(event.created_at))}</small></div></article>`).join('') : '<p class="muted">No activation events yet.</p>';
+    $('#dev-suspend').disabled = data.status === 'suspended';
+    $('#dev-restore').disabled = data.status !== 'suspended';
+  } catch (err) { toast('Developer console: ' + err.message); }
+}
+$('#dev-refresh').addEventListener('click', renderDeveloperDashboard);
+$('#dev-renew-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const data = await api('/api/developer/subscription/renew', { method: 'POST', body: JSON.stringify({ paymentReference: $('#dev-payment-ref').value.trim() }) });
+    $('#dev-payment-ref').value = '';
+    me.subscriptionStatus = data.status;
+    renderDeveloperDashboard();
+    toast('Annual subscription recorded and activated for 365 days.');
+  } catch (err) { toast('⚠️ ' + err.message); }
+});
+$('#dev-suspend').addEventListener('click', async () => {
+  const reason = prompt('Reason for suspending this installation:');
+  if (!reason?.trim()) return;
+  try { await api('/api/developer/subscription/suspend', { method: 'POST', body: JSON.stringify({ reason }) }); renderDeveloperDashboard(); toast('Service suspended; event recorded.'); }
+  catch (err) { toast('⚠️ ' + err.message); }
+});
+$('#dev-restore').addEventListener('click', async () => {
+  try { await api('/api/developer/subscription/restore', { method: 'POST', body: '{}' }); renderDeveloperDashboard(); toast('Subscription restored.'); }
+  catch (err) { toast('⚠️ ' + err.message); }
+});
 
 $('#login-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -186,9 +263,11 @@ $('#login-form').addEventListener('submit', async e => {
     }
     await loadConfig();
     showApp();
-    await refreshAll();
-    await ensureShift();
-    await syncQueue();
+    if (me.role !== 'developer' && ['trial', 'active'].includes(me.subscriptionStatus || 'trial')) {
+      await refreshAll();
+      await ensureShift();
+      await syncQueue();
+    }
   } catch (e2) {
     err.textContent = '⚠️ ' + e2.message;
     err.hidden = false;
@@ -215,6 +294,8 @@ $$('.tab').forEach(btn => btn.addEventListener('click', () => {
   if (btn.dataset.view === 'sales') renderSales();
   if (btn.dataset.view === 'customers') renderCustomers();
   if (btn.dataset.view === 'settings') renderSettings();
+  if (btn.dataset.view === 'subscription') renderSubscriptionStatus();
+  if (btn.dataset.view === 'developer') renderDeveloperDashboard();
 }));
 
 // ---------- Shifts ----------
@@ -814,9 +895,11 @@ $('#force-password-form').addEventListener('submit', async e => {
     me.mustChangePassword = false;
     await loadConfig();
     showApp();
-    await refreshAll();
-    await ensureShift();
-    await syncQueue();
+    if (me.role !== 'developer' && ['trial', 'active'].includes(me.subscriptionStatus || 'trial')) {
+      await refreshAll();
+      await ensureShift();
+      await syncQueue();
+    }
   } catch (err) {
     error.textContent = '⚠️ ' + err.message;
     error.hidden = false;
@@ -884,9 +967,11 @@ async function refreshAll() {
     } else {
       await loadConfig();
       showApp();
-      await refreshAll();
-      await ensureShift();
-      await syncQueue();
+      if (me.role !== 'developer' && ['trial', 'active'].includes(me.subscriptionStatus || 'trial')) {
+        await refreshAll();
+        await ensureShift();
+        await syncQueue();
+      }
     }
   } catch {
     showLogin();

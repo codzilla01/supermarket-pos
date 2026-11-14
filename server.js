@@ -14,10 +14,29 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || ''; // legacy card refunds only
+const DEVELOPER_USERNAME = String(process.env.POS_DEVELOPER_USERNAME || '').trim().toLowerCase();
+const DEVELOPER_PASSWORD = String(process.env.POS_DEVELOPER_PASSWORD || '');
+const INITIAL_ADMIN_PASSWORD = String(process.env.POS_INITIAL_ADMIN_PASSWORD || '');
 const MIN_PASSWORD_LENGTH = 12;
 
+if (!INITIAL_ADMIN_PASSWORD || INITIAL_ADMIN_PASSWORD.length < 16) throw new Error('Set POS_INITIAL_ADMIN_PASSWORD to a unique secret of at least 16 characters before startup');
+if (!DEVELOPER_USERNAME || !DEVELOPER_PASSWORD) throw new Error('Set POS_DEVELOPER_USERNAME and POS_DEVELOPER_PASSWORD before startup');
+if (DEVELOPER_PASSWORD.length < 16) throw new Error('POS_DEVELOPER_PASSWORD must be at least 16 characters');
 const db = openDb();
-seed(db, auth.hashPassword);
+seed(db, auth.hashPassword, INITIAL_ADMIN_PASSWORD);
+if (DEVELOPER_USERNAME) {
+  if (DEVELOPER_USERNAME === 'admin') throw new Error('POS_DEVELOPER_USERNAME must be different from the store admin username');
+  const developer = db.prepare('SELECT id, role FROM users WHERE username = ?').get(DEVELOPER_USERNAME);
+  if (developer) {
+    if (developer.role !== 'developer') throw new Error('POS_DEVELOPER_USERNAME is already used by a non-developer account');
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(developer.id);
+    db.prepare(`UPDATE users SET password_hash = ?, role = 'developer', name = 'Platform Developer', active = 1, must_change_password = 0 WHERE id = ?`).run(auth.hashPassword(DEVELOPER_PASSWORD), developer.id);
+  } else {
+    db.prepare(`INSERT INTO users(username, password_hash, role, name, active, must_change_password) VALUES(?, ?, 'developer', 'Platform Developer', 1, 0)`).run(DEVELOPER_USERNAME, auth.hashPassword(DEVELOPER_PASSWORD));
+  }
+  db.prepare("UPDATE users SET active = 0 WHERE role = 'developer' AND username != ?").run(DEVELOPER_USERNAME);
+  db.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'developer' AND active = 0)").run();
+}
 
 // ---------- helpers ----------
 const MIME = {
@@ -72,16 +91,49 @@ function sessionCookie(token) {
   return `pos_session=${token}; HttpOnly; Path=/; SameSite=Lax${secure}; Max-Age=${12 * 3600}`;
 }
 
+let lastActivityWrite = 0;
 function requireAuth(req, res) {
   const token = auth.parseCookies(req).pos_session;
   const user = auth.getSessionUser(db, token);
   if (!user) { sendJson(res, 401, { error: 'Not authenticated' }); return null; }
+  if (Date.now() - lastActivityWrite > 60_000) {
+    const now = new Date().toISOString();
+    db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(now, now);
+    lastActivityWrite = Date.now();
+  }
   return user;
 }
 
 function requireAdmin(user, res) {
   if (user.role !== 'admin') { sendJson(res, 403, { error: 'Admin access required' }); return false; }
   return true;
+}
+
+function requireDeveloper(user, res) {
+  if (user.role !== 'developer') { sendJson(res, 403, { error: 'Developer console access required' }); return false; }
+  return true;
+}
+
+function subscriptionState() {
+  const row = db.prepare('SELECT * FROM subscriptions WHERE id = 1').get();
+  const expired = new Date(row.expires_at).getTime() <= Date.now();
+  const status = row.status === 'suspended' ? 'suspended' : (expired ? 'expired' : row.status);
+  return { ...row, status, days_remaining: Math.max(0, Math.ceil((new Date(row.expires_at).getTime() - Date.now()) / 86400000)) };
+}
+
+function logSubscriptionEvent(action, details, actor) {
+  db.prepare('INSERT INTO subscription_events(action, details, actor) VALUES(?, ?, ?)').run(action, String(details || '').slice(0, 300), String(actor || 'system').slice(0, 80));
+}
+
+function subscriptionPayload(user) {
+  const sub = subscriptionState();
+  const cfg = getSettings(db);
+  const result = { status: sub.status, plan: sub.plan, started_at: sub.started_at, expires_at: sub.expires_at, activated_at: sub.activated_at, last_activity_at: sub.last_activity_at, days_remaining: sub.days_remaining, store_name: cfg.store_name, can_transact: ['trial', 'active'].includes(sub.status) };
+  if (user?.role === 'developer') {
+    result.events = db.prepare('SELECT id, action, details, actor, created_at FROM subscription_events ORDER BY id DESC LIMIT 100').all();
+    result.metrics = { sales_today: db.prepare("SELECT COUNT(*) AS c FROM sales WHERE date(date) = date('now') AND status = 'completed'").get().c, revenue_today: db.prepare("SELECT COALESCE(SUM(total), 0) AS total FROM sales WHERE date(date) = date('now') AND status = 'completed'").get().total, sales_total: db.prepare("SELECT COUNT(*) AS c FROM sales WHERE status = 'completed'").get().c, users_active: db.prepare("SELECT COUNT(*) AS c FROM users WHERE active = 1 AND role != 'developer'").get().c, product_count: db.prepare('SELECT COUNT(*) AS c FROM products WHERE active = 1').get().c };
+  }
+  return result;
 }
 
 const num = (v, d = 0) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
@@ -132,7 +184,9 @@ async function handleApi(req, res, url) {
       return sendJson(res, 401, { error: 'Invalid username or password' });
     }
     const token = auth.createSession(db, user.id);
-    return sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password } },
+    db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(new Date().toISOString(), new Date().toISOString());
+    logSubscriptionEvent('login', `Successful sign-in: ${user.username}`, user.username);
+    return sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, subscriptionStatus: subscriptionState().status } },
       { 'Set-Cookie': sessionCookie(token) });
   }
 
@@ -142,12 +196,53 @@ async function handleApi(req, res, url) {
   if (user.must_change_password && !((p === '/api/me/password' && method === 'POST') || (p === '/api/logout' && method === 'POST') || (p === '/api/me' && method === 'GET'))) {
     return sendJson(res, 403, { error: 'Change your password before using the POS', code: 'PASSWORD_CHANGE_REQUIRED' });
   }
+  const allowedWithoutSubscription = ['/api/me', '/api/config', '/api/subscription', '/api/logout', '/api/me/password'];
+  if (user.role !== 'developer' && !['trial', 'active'].includes(subscriptionState().status) && !allowedWithoutSubscription.includes(p)) {
+    return sendJson(res, 402, { error: `Subscription ${subscriptionState().status}. Contact the software provider to restore POS access.`, code: 'SUBSCRIPTION_REQUIRED', subscription: subscriptionPayload(user) });
+  }
+
+  if (p === '/api/subscription' && method === 'GET') return sendJson(res, 200, subscriptionPayload(user));
+  if (p === '/api/developer/dashboard' && method === 'GET') {
+    if (!requireDeveloper(user, res)) return;
+    return sendJson(res, 200, subscriptionPayload(user));
+  }
+  if (p === '/api/developer/subscription/renew' && method === 'POST') {
+    if (!requireDeveloper(user, res)) return;
+    const b = await readBody(req);
+    const paymentReference = str(b.paymentReference, 120);
+    if (!paymentReference) return sendJson(res, 400, { error: 'Add a payment reference or manual receipt number before renewing' });
+    const current = subscriptionState();
+    const now = new Date();
+    const currentExpiry = new Date(current.expires_at);
+    const start = currentExpiry > now && current.status !== 'suspended' ? currentExpiry : now;
+    const expiry = new Date(start.getTime() + 365 * 86400000);
+    db.prepare(`UPDATE subscriptions SET status = 'active', plan = 'annual', started_at = ?, expires_at = ?, activated_at = COALESCE(activated_at, ?), updated_at = ? WHERE id = 1`).run(start.toISOString(), expiry.toISOString(), now.toISOString(), now.toISOString());
+    logSubscriptionEvent(current.activated_at ? 'annual_renewal' : 'activated', `365-day annual term. Payment ref: ${paymentReference}`, user.username);
+    return sendJson(res, 200, subscriptionPayload(user));
+  }
+  if (p === '/api/developer/subscription/suspend' && method === 'POST') {
+    if (!requireDeveloper(user, res)) return;
+    const b = await readBody(req);
+    const reason = str(b.reason, 250);
+    if (!reason) return sendJson(res, 400, { error: 'A suspension reason is required' });
+    db.prepare(`UPDATE subscriptions SET status = 'suspended', updated_at = ? WHERE id = 1`).run(new Date().toISOString());
+    logSubscriptionEvent('suspended', reason, user.username);
+    return sendJson(res, 200, subscriptionPayload(user));
+  }
+  if (p === '/api/developer/subscription/restore' && method === 'POST') {
+    if (!requireDeveloper(user, res)) return;
+    const sub = subscriptionState();
+    if (new Date(sub.expires_at).getTime() <= Date.now()) return sendJson(res, 409, { error: 'Expired annual term cannot be restored; record payment and renew instead' });
+    db.prepare(`UPDATE subscriptions SET status = 'active', updated_at = ? WHERE id = 1`).run(new Date().toISOString());
+    logSubscriptionEvent('restored', 'Subscription restored before expiry', user.username);
+    return sendJson(res, 200, subscriptionPayload(user));
+  }
 
   if (p === '/api/logout' && method === 'POST') {
     auth.deleteSession(db, auth.parseCookies(req).pos_session);
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=; HttpOnly; Path=/; SameSite=Lax${process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure'}; Max-Age=0` });
   }
-  if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user });
+  if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, subscriptionStatus: subscriptionState().status } });
   if (p === '/api/config' && method === 'GET') {
     return sendJson(res, 200, { settings: getSettings(db), paymentMethods: ['cash'] });
   }
@@ -466,7 +561,7 @@ async function handleApi(req, res, url) {
   // ----- Users (admin) -----
   if (p === '/api/users' && method === 'GET') {
     if (!requireAdmin(user, res)) return;
-    return sendJson(res, 200, db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY id').all());
+    return sendJson(res, 200, db.prepare("SELECT id, username, role, name, active, created_at FROM users WHERE role != 'developer' ORDER BY id").all());
   }
   if (p === '/api/users' && method === 'POST') {
     if (!requireAdmin(user, res)) return;
@@ -487,7 +582,7 @@ async function handleApi(req, res, url) {
   if (userMatch) {
     if (!requireAdmin(user, res)) return;
     const target = db.prepare('SELECT * FROM users WHERE id = ?').get(+userMatch[1]);
-    if (!target) return sendJson(res, 404, { error: 'User not found' });
+    if (!target || target.role === 'developer') return sendJson(res, 404, { error: 'User not found' });
     if (method === 'PUT') {
       const b = await readBody(req);
       const next = {
@@ -536,8 +631,8 @@ async function handleApi(req, res, url) {
       const t = num(obj.tax_rate, -1);
       if (t < 0 || t > 1) return sendJson(res, 400, { error: 'Tax rate must be between 0 and 1 (e.g. 0.09)' });
     }
-    if (obj.currency_code !== undefined && !['USD', 'EUR', 'GBP'].includes(obj.currency_code.toUpperCase())) {
-      return sendJson(res, 400, { error: 'Currency code must be USD, EUR, or GBP' });
+    if (obj.currency_code !== undefined && !['USD', 'EUR', 'GBP', 'EGP'].includes(obj.currency_code.toUpperCase())) {
+      return sendJson(res, 400, { error: 'Currency code must be USD, EUR, GBP, or EGP' });
     }
     setSettings(db, obj);
     return sendJson(res, 200, getSettings(db));
@@ -623,7 +718,7 @@ const server = http.createServer(async (req, res) => {
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`🛒 FreshMart POS (production) running at http://${HOST}:${PORT}`);
-    console.log(`   Default admin login: admin / admin123  (password rotation required at first login)`);
+    if (DEVELOPER_USERNAME) console.log('   Developer console: enabled (credentials are configured via environment)');
     console.log('   Checkout: cash only');
   });
 }

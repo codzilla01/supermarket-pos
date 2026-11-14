@@ -29,7 +29,7 @@ async function req(method, p, body, useCookie = true, register = 'Register 1') {
 
 before(async () => {
   server = spawn('node', ['server.js'], {
-    env: { ...process.env, PORT: String(PORT), POS_DB_PATH: tmpDb },
+    env: { ...process.env, PORT: String(PORT), POS_DB_PATH: tmpDb, POS_INITIAL_ADMIN_PASSWORD: 'store-initial-admin-test-2026!', POS_DEVELOPER_USERNAME: 'platform-dev', POS_DEVELOPER_PASSWORD: 'dev-console-password-2026!' },
     stdio: 'pipe',
   });
   // wait for readiness
@@ -57,7 +57,7 @@ test('unauthenticated API access is rejected', async () => {
 });
 
 test('default admin must rotate its starter password before using the API', async () => {
-  const r = await req('POST', '/api/login', { username: 'admin', password: 'admin123' }, false);
+  const r = await req('POST', '/api/login', { username: 'admin', password: 'store-initial-admin-test-2026!' }, false);
   assert.equal(r.status, 200);
   assert.equal(r.data.user.role, 'admin');
   assert.equal(r.data.user.mustChangePassword, true);
@@ -65,7 +65,7 @@ test('default admin must rotate its starter password before using the API', asyn
   assert.match(cookieHeader, /; Secure(?:;|$)/);
   const blocked = await req('GET', '/api/products');
   assert.equal(blocked.status, 403);
-  const changed = await req('POST', '/api/me/password', { current: 'admin123', next: 'freshmart-admin-test-2026' });
+  const changed = await req('POST', '/api/me/password', { current: 'store-initial-admin-test-2026!', next: 'freshmart-admin-test-2026' });
   assert.equal(changed.status, 200);
   const products = await req('GET', '/api/products');
   assert.equal(products.status, 200);
@@ -195,4 +195,34 @@ test('backup export and import preserve products, tax rates, sales, and shifts',
   assert.equal(products.data.find(p => p.name === 'Tax test item').tax_rate, 0.21);
   const shifts = await req('GET', '/api/shifts');
   assert.ok(shifts.data.length >= 2);
+});
+
+
+test('developer console records annual payment, activation, suspension and restoration', async () => {
+  const forbidden = await req('GET', '/api/developer/dashboard');
+  assert.equal(forbidden.status, 403);
+  const login = await req('POST', '/api/login', { username: 'platform-dev', password: 'dev-console-password-2026!' }, false);
+  assert.equal(login.status, 200);
+  assert.equal(login.data.user.role, 'developer');
+  const initial = await req('GET', '/api/developer/dashboard');
+  assert.equal(initial.status, 200);
+  assert.equal(initial.data.status, 'trial');
+  const missingReceipt = await req('POST', '/api/developer/subscription/renew', {});
+  assert.equal(missingReceipt.status, 400);
+  const renewed = await req('POST', '/api/developer/subscription/renew', { paymentReference: 'BANK-TRANSFER-TEST-2026' });
+  assert.equal(renewed.status, 200);
+  assert.equal(renewed.data.status, 'active');
+  assert.equal(renewed.data.plan, 'annual');
+  assert.ok(renewed.data.days_remaining >= 364);
+  const suspended = await req('POST', '/api/developer/subscription/suspend', { reason: 'Test suspension' });
+  assert.equal(suspended.data.status, 'suspended');
+  await req('POST', '/api/login', { username: 'admin', password: 'freshmart-admin-test-2026' }, false);
+  const blocked = await req('GET', '/api/products');
+  assert.equal(blocked.status, 402);
+  await req('POST', '/api/login', { username: 'platform-dev', password: 'dev-console-password-2026!' }, false);
+  const restored = await req('POST', '/api/developer/subscription/restore', {});
+  assert.equal(restored.data.status, 'active');
+  const available = await req('GET', '/api/products');
+  assert.equal(available.status, 200);
+  assert.ok(restored.data.events.some(e => e.action === 'activated'));
 });
