@@ -5,7 +5,11 @@
   --radius: 14px; --shadow: 0 2px 10px rgba(0,0,0,.07);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+body { font-family: "Segoe UI", "Noto Sans Arabic", "Cairo", "Tajawal", Tahoma, system-ui, -apple-system, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+html[lang="ar"] body { font-family: "Noto Sans Arabic", "Cairo", "Tajawal", "Segoe UI", Tahoma, system-ui, sans-serif; }
+html[lang="ar"] input, html[lang="ar"] select, html[lang="ar"] textarea, html[lang="ar"] button { font-family: inherit; }
+/* Keep barcodes, phone numbers and money amounts left-to-right even in Arabic UI */
+input#barcode, input#tendered, input#closing-amount, input#opening-float, input[type="email"] { direction: ltr; text-align: start; }
 code { background: #f3f4f6; padding: 1px 6px; border-radius: 5px; font-size: 12px; }
 .small { font-size: 12px; }
 
@@ -19,6 +23,13 @@ code { background: #f3f4f6; padding: 1px 6px; border-radius: 5px; font-size: 12p
 .login-card label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 14px; }
 .login-card label input { display: block; width: 100%; margin-top: 5px; padding: 11px; border: 1px solid var(--border); border-radius: 9px; font-size: 15px; color: var(--ink); }
 .login-card .small { text-align: center; margin-top: 14px; }
+
+/* ---------- Language switch ---------- */
+.lang-switch { white-space: nowrap; }
+.login-card .lang-switch { display: block; width: 100%; margin-top: 10px; }
+.lang-choice { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+.inline-check { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; color: var(--ink); cursor: pointer; }
+.inline-check input { width: 16px; height: 16px; accent-color: var(--green); }
 
 /* ---------- Topbar ---------- */
 .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 50; flex-wrap: wrap; }
@@ -166,7 +177,9 @@ tr:last-child td { border-bottom: none; }
 .receipt .r-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
 .receipt .r-total { border-top: 2px dashed #999; margin-top: 10px; padding-top: 10px; font-weight: 800; font-size: 16px; }
 .receipt .r-foot { text-align: center; margin-top: 14px; color: #666; font-size: 12px; }
-.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 12px 22px; border-radius: 999px; font-weight: 600; font-size: 14px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,.3); max-width: 90vw; text-align: center; }
+.receipt .r-row .amount, .receipt .r-row bdi { unicode-bidi: isolate; white-space: nowrap; }
+.receipt .r-head h2, .receipt .r-head div { unicode-bidi: isolate; }
+.toast { position: fixed; bottom: 24px; inset-inline-start: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 12px 22px; border-radius: 999px; font-weight: 600; font-size: 14px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,.3); max-width: 90vw; text-align: center; }
 
 @media (max-width: 900px) {
   #view-pos.active { grid-template-columns: 1fr; }
@@ -231,4 +244,31 @@ tr:last-child td { border-bottom: none; }
   .subscription-facts > div { min-width: calc(50% - 8px); padding: 10px; }
   .dev-license-card, .dev-timeline-card { padding: 16px; }
   .license-details { gap: 10px; }
+}
+
+/* ---------- RTL (Arabic) adjustments ---------- */
+/* Everything below only applies when <html dir="rtl"> is active. */
+[dir="rtl"] .notification-bell span { right: auto; inset-inline-end: -7px; }
+[dir="rtl"] .notification-panel { right: auto; inset-inline-start: 0; }
+[dir="rtl"] .notification-item { border-left: 0; border-right: 4px solid #9ca3af; }
+[dir="rtl"] .notification-item.warning { border-right-color: #f59e0b; }
+[dir="rtl"] .notification-item.critical { border-right-color: #dc2626; }
+[dir="rtl"] .notification-item.success { border-right-color: #16a34a; }
+[dir="rtl"] th, [dir="rtl"] td { text-align: right; }
+[dir="rtl"] .line-total { text-align: left; }
+[dir="rtl"] .subscription-facts > div { text-align: right; }
+[dir="rtl"] .subscription-hero { background: radial-gradient(circle at top left, #dcfce7 0, #fff 42%); }
+[dir="rtl"] .modal-actions { justify-content: flex-start; }
+[dir="rtl"] .bar > div { margin-inline-start: auto; }
+[dir="rtl"] .product .price small { direction: ltr; unicode-bidi: isolate; }
+[dir="rtl"] .receipt { direction: rtl; }
+/* Numbers inside Arabic labels keep Latin digits and correct ordering */
+[dir="rtl"] .price, [dir="rtl"] .value, [dir="rtl"] .line-total, [dir="rtl"] .r-row > span:last-child,
+[dir="rtl"] #sum-subtotal, [dir="rtl"] #sum-discount, [dir="rtl"] #sum-points, [dir="rtl"] #sum-tax,
+[dir="rtl"] #sum-total, [dir="rtl"] #due, [dir="rtl"] #change, [dir="rtl"] #expected-cash, [dir="rtl"] #variance { unicode-bidi: isolate; }
+
+@media print {
+  /* 80 mm thermal receipts print the same in both directions */
+  [dir="rtl"] #receipt-body { direction: rtl; text-align: right; }
+  [dir="rtl"] #receipt-body .r-head, [dir="rtl"] #receipt-body .r-foot { text-align: center; }
 }
