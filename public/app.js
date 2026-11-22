@@ -2,9 +2,11 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const t = (key, vars) => I18N.t(key, vars);
+const lang = () => I18N.lang;
 
 let me = null;               // {id, username, role, name}
-let settings = { store_name: 'FreshMart', store_address: '', store_phone: '', vat_number: '', receipt_footer: 'Thank you for shopping!', tax_rate: '0.08', currency: 'ج.م', currency_code: 'EGP', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
+let settings = { store_name: 'FreshMart', store_address: '', store_phone: '', vat_number: '', receipt_footer: '', tax_rate: '0.08', currency: 'ج.م', currency_code: 'EGP', low_stock_threshold: '10', register_name: 'Register 1', points_per_dollar: '1', points_value: '0.01' };
 let products = [];
 let customers = [];
 let cart = {};               // productId -> qty
@@ -14,11 +16,23 @@ let payMethod = 'cash';
 let shift = null;            // open shift or null
 let lastSale = null;
 
-const money = n => settings.currency + Number(n || 0).toFixed(2);
+const nf = (n, digits = 2) => new Intl.NumberFormat(I18N.locale(), {
+  minimumFractionDigits: digits,
+  maximumFractionDigits: digits,
+}).format(Number(n || 0));
+const money = n => (lang() === 'ar' ? `${nf(n)} ${settings.currency}` : `${settings.currency}${nf(n)}`);
+const fmtDate = value => (value ? new Date(value).toLocaleString(I18N.locale(), { dateStyle: 'medium', timeStyle: 'short' }) : '—');
+const fmtDateShort = value => (value ? new Date(value).toLocaleDateString(I18N.locale()) : '—');
 const taxRate = () => Math.min(1, Math.max(0, parseFloat(settings.tax_rate) || 0));
 const pointsValue = () => Math.max(0, parseFloat(settings.points_value) || 0);
 const REGISTER_KEY = 'pos_terminal_register';
 const terminalRegister = () => localStorage.getItem(REGISTER_KEY) || settings.register_name || 'Register 1';
+
+// Store data (units) is saved in canonical English; only the display is localized.
+const unitLabel = unit => I18N.unitLabel(unit);
+const unitCanonical = unit => I18N.unitCanonical(unit);
+const statusLabel = status => t(`status.${status}`);
+const roleLabel = role => t(`role.${role}`);
 
 async function api(path, opts = {}) {
   let res;
@@ -26,23 +40,25 @@ async function api(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(), ...(opts.headers || {}) };
     res = await fetch(path, { ...opts, headers });
   } catch (e) {
-    throw Object.assign(new Error('Network error'), { offline: true });
+    throw Object.assign(new Error(t('err.network')), { offline: true });
   }
-  if (res.status === 401) { showLogin(); throw new Error('Session expired'); }
+  if (res.status === 401) { showLogin(); throw new Error(t('err.session')); }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     if (res.status === 402 && me) { me.subscriptionStatus = err.subscription?.status || 'expired'; showApp(); }
-    throw new Error(err.error || `Request failed (${res.status})`);
+    // Server sends an English `error` plus an Arabic `messageAr`; show the one that matches the UI language.
+    const message = (lang() === 'ar' ? (err.messageAr || err.error) : err.error) || t('err.request', { status: res.status });
+    throw new Error(message);
   }
   return res.json();
 }
 
 function toast(msg) {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.hidden = false;
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => (t.hidden = true), 3000);
+  const el = $('#toast');
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => (el.hidden = true), 3000);
 }
 
 // ---------- Notifications (persistent visual center + optional sound/browser alerts) ----------
@@ -82,14 +98,16 @@ function renderNotifications() {
   const count = $('#notifications-count');
   count.hidden = unread === 0;
   count.textContent = unread > 99 ? '99+' : String(unread);
-  $('#notification-sound').textContent = notificationSoundEnabled() ? '🔊 Sound on' : '🔇 Sound off';
-  $('#notification-permission').textContent = typeof Notification === 'undefined' ? 'Browser alerts unavailable' : (Notification.permission === 'granted' ? 'Browser alerts enabled' : 'Enable browser alerts');
+  $('#notification-sound').textContent = notificationSoundEnabled() ? t('notif.soundOn') : t('notif.soundOff');
+  $('#notification-permission').textContent = typeof Notification === 'undefined'
+    ? t('notif.alertsUnavailable')
+    : (Notification.permission === 'granted' ? t('notif.alertsEnabled') : t('notif.enableAlerts'));
   $('#notification-list').innerHTML = items.length ? items.map(n => `
     <article class="notification-item ${esc(n.level)} ${n.read ? '' : 'unread'}" data-notification-id="${esc(n.id)}">
       <div class="notification-title">${esc(n.title)}</div>
       <div class="notification-message">${esc(n.message)}</div>
-      <time>${new Date(n.createdAt).toLocaleString()}</time>
-    </article>`).join('') : '<div class="notification-empty">No notifications yet.</div>';
+      <time>${fmtDate(n.createdAt)}</time>
+    </article>`).join('') : `<div class="notification-empty">${esc(t('notif.empty'))}</div>`;
 }
 function notifyUser(title, message, { level = 'info', key = '', sound = true } = {}) {
   const items = readNotifications();
@@ -110,10 +128,10 @@ function scanStockAlerts(list) {
     const previous = stockSnapshot.get(p.id);
     if (Number(p.stock) <= threshold) {
       if (Number(p.stock) === 0 && previous && previous.stock > 0) {
-        notifyUser('Out of stock', `${p.name} has run out.`, { level: 'critical', key: `stock-out-${p.id}` });
+        notifyUser(t('notify.stockOut'), t('notify.stockOutNote', { name: p.name }), { level: 'critical', key: `stock-out-${p.id}` });
       } else if (!previous || previous.stock > threshold) {
         const out = Number(p.stock) === 0;
-        notifyUser(out ? 'Out of stock' : 'Low stock', `${p.name}: ${p.stock} remaining.`, { level: out ? 'critical' : 'warning', key: `stock-low-${p.id}` });
+        notifyUser(out ? t('notify.stockOut') : t('notify.stockLow'), t('notify.stockLowNote', { name: p.name, n: p.stock }), { level: out ? 'critical' : 'warning', key: `stock-low-${p.id}` });
       }
     }
     stockSnapshot.set(p.id, { stock: Number(p.stock) });
@@ -132,10 +150,10 @@ $('#notification-sound').addEventListener('click', () => {
   playNotificationSound('success');
 });
 $('#notification-permission').addEventListener('click', async () => {
-  if (typeof Notification === 'undefined') return toast('Browser notifications are not supported here.');
+  if (typeof Notification === 'undefined') return toast(t('notif.unsupported'));
   const result = await Notification.requestPermission();
   renderNotifications();
-  toast(result === 'granted' ? '✅ Browser alerts enabled' : 'Browser alerts were not enabled.');
+  toast(result === 'granted' ? t('notif.granted') : t('notif.notGranted'));
 });
 $('#notification-read-all').addEventListener('click', () => {
   localStorage.setItem(NOTIFICATION_KEY, JSON.stringify(readNotifications().map(n => ({ ...n, read: true }))));
@@ -152,14 +170,60 @@ $('#notification-list').addEventListener('click', e => {
 renderNotifications();
 
 // ---------- Clock ----------
-setInterval(() => { $('#clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }, 1000);
-$('#clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function renderClock() {
+  $('#clock').textContent = new Date().toLocaleTimeString(I18N.locale(), { hour: '2-digit', minute: '2-digit' });
+}
+setInterval(renderClock, 1000);
+renderClock();
+
+// ---------- Language ----------
+$$('[data-lang-toggle]').forEach(btn => btn.addEventListener('click', () => {
+  I18N.toggle();
+}));
+function syncLangControls() {
+  $$('input[name="lang-choice"]').forEach(input => { input.checked = input.value === lang(); });
+  $$('[data-lang-toggle]').forEach(btn => {
+    btn.textContent = t('app.langSwitch');
+    btn.title = t('app.langSwitchTitle');
+  });
+}
+$$('input[name="lang-choice"]').forEach(input => input.addEventListener('change', () => {
+  if (input.checked) I18N.setLang(input.value);
+}));
+
+function relocalize() {
+  I18N.apply(document);
+  syncLangControls();
+  document.title = t('app.title', { store: settings.store_name });
+  renderClock();
+  renderNotifications();
+  if (!me) return;
+  renderUserChip();
+  renderCategories(); renderGrid(); renderCart(); renderCustomerSelect();
+  updateQueueBadge();
+  renderShiftBadge();
+  if ($('#view-inventory').classList.contains('active')) renderInventory();
+  if ($('#view-sales').classList.contains('active')) safeRender(renderSales);
+  if ($('#view-customers').classList.contains('active')) renderCustomers();
+  if ($('#view-settings').classList.contains('active')) safeRender(renderSettings);
+  if ($('#view-subscription').classList.contains('active')) renderSubscriptionStatus();
+  if ($('#view-developer').classList.contains('active')) renderDeveloperDashboard();
+  if (!$('#checkout-modal').hidden) { $('#due').textContent = money(totals().total); updateChange(); }
+  if (!$('#shift-modal').hidden) syncShiftModalCurrency();
+  if (lastSale && !$('#receipt-modal').hidden) showReceipt(lastSale);
+}
+I18N.onChange(relocalize);
 
 // ---------- Auth / login ----------
 function showLogin() {
   me = null;
   $('#app').hidden = true;
   $('#login-screen').hidden = false;
+}
+function renderUserChip() {
+  if (!me) return;
+  const developer = me.role === 'developer';
+  $('#user-chip').textContent = `${me.name || me.username} (${developer ? t('role.developer') : (me.role === 'admin' ? t('role.admin') : t('role.cashier'))})`;
 }
 function showApp() {
   $('#login-screen').hidden = true;
@@ -174,11 +238,12 @@ function showApp() {
   $('#shift-badge').style.display = blocked || developer ? 'none' : '';
   $('#notifications-btn').style.display = developer ? 'none' : '';
   $('#queue-badge').style.display = developer ? 'none' : '';
-  $('#user-chip').textContent = `${me.name || me.username} (${developer ? 'Developer' : (me.role === 'admin' ? 'Admin' : 'Cashier')})`;
+  renderUserChip();
   $('#brand-name').textContent = settings.store_name;
   $('#login-store').textContent = settings.store_name;
   $$('.currency-unit').forEach(el => { el.textContent = settings.currency_code || 'EGP'; });
-  document.title = `${settings.store_name} — Supermarket POS`;
+  document.title = t('app.title', { store: settings.store_name });
+  syncLangControls();
   const view = developer ? 'developer' : (blocked ? 'subscription' : 'pos');
   $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
@@ -186,20 +251,20 @@ function showApp() {
   if (view === 'subscription') renderSubscriptionStatus();
 }
 
-function fmtDate(value) {
-  return value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-}
 function subscriptionLabel(status) {
-  return ({ trial: 'Trial', active: 'Active', suspended: 'Suspended', expired: 'Expired' })[status] || status;
+  return status === 'active' ? t('status.active')
+    : status === 'trial' ? t('sub.trialTitle')
+    : status === 'suspended' ? statusLabel('suspended') && t('sub.pausedTitle')
+    : statusLabel(status);
 }
 async function renderSubscriptionStatus() {
   try {
     const sub = await api('/api/subscription');
-    $('#subscription-title').textContent = sub.status === 'active' ? 'Your annual plan is active' : (sub.status === 'trial' ? 'Evaluation period' : 'Service access is paused');
+    $('#subscription-title').textContent = sub.status === 'active' ? t('sub.activeTitle') : (sub.status === 'trial' ? t('sub.trialTitle') : t('sub.pausedTitle'));
     $('#subscription-summary').textContent = sub.status === 'trial'
-      ? `${sub.days_remaining} day${sub.days_remaining === 1 ? '' : 's'} left in your evaluation period.`
-      : (sub.status === 'active' ? `${sub.days_remaining} days remaining on your ${sub.plan} subscription.` : `Your subscription is ${subscriptionLabel(sub.status).toLowerCase()}. Contact your software provider to restore access.`);
-    $('#subscription-facts').innerHTML = `<span class="license-pill ${esc(sub.status)}">${esc(subscriptionLabel(sub.status))}</span><div><small>Plan</small><strong>${esc(sub.plan)}</strong></div><div><small>Valid through</small><strong>${esc(fmtDate(sub.expires_at))}</strong></div><div><small>Store</small><strong>${esc(sub.store_name)}</strong></div>`;
+      ? t(sub.days_remaining === 1 ? 'sub.trialSummaryOne' : 'sub.trialSummary', { n: sub.days_remaining })
+      : (sub.status === 'active' ? t('sub.activeSummary', { n: sub.days_remaining, plan: sub.plan }) : t('sub.pausedSummary', { status: subscriptionLabel(sub.status) }));
+    $('#subscription-facts').innerHTML = `<span class="license-pill ${esc(sub.status)}">${esc(subscriptionLabel(sub.status))}</span><div><small>${esc(t('sub.plan'))}</small><strong>${esc(sub.plan)}</strong></div><div><small>${esc(t('sub.validThrough'))}</small><strong>${esc(fmtDate(sub.expires_at))}</strong></div><div><small>${esc(t('sub.store'))}</small><strong>${esc(sub.store_name)}</strong></div>`;
   } catch (err) { $('#subscription-summary').textContent = err.message; }
 }
 async function renderDeveloperDashboard() {
@@ -207,24 +272,28 @@ async function renderDeveloperDashboard() {
   try {
     const data = await api('/api/developer/dashboard');
     const metrics = [
-      ['TODAY’S SALES', data.metrics.sales_today], ['TODAY’S REVENUE', `${settings.currency}${Number(data.metrics.revenue_today).toFixed(2)}`],
-      ['ACTIVE TEAM', data.metrics.users_active], ['PRODUCTS', data.metrics.product_count], ['LIFETIME SALES', data.metrics.sales_total],
+      [t('dev.metricSalesToday'), data.metrics.sales_today],
+      [t('dev.metricRevenueToday'), money(data.metrics.revenue_today)],
+      [t('dev.metricTeam'), data.metrics.users_active],
+      [t('dev.metricProducts'), data.metrics.product_count],
+      [t('dev.metricLifetime'), data.metrics.sales_total],
     ];
     $('#dev-metrics').innerHTML = metrics.map(([label, value]) => `<article class="dev-metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`).join('');
     $('#dev-store-name').textContent = data.store_name;
     $('#dev-license-status').textContent = subscriptionLabel(data.status);
     $('#dev-license-status').className = `license-pill ${esc(data.status)}`;
     $('#dev-license-details').innerHTML = `
-      <div><small>Plan</small><strong>${esc(data.plan)}</strong></div>
-      <div><small>Started</small><strong>${esc(fmtDate(data.started_at))}</strong></div>
-      <div><small>Expires</small><strong>${esc(fmtDate(data.expires_at))}</strong></div>
-      <div><small>Days remaining</small><strong>${esc(data.days_remaining)}</strong></div>
-      <div><small>Activated</small><strong>${esc(fmtDate(data.activated_at))}</strong></div>
-      <div><small>Last activity</small><strong>${esc(fmtDate(data.last_activity_at))}</strong></div>`;
-    $('#dev-events').innerHTML = data.events.length ? data.events.map(event => `<article class="dev-event"><span class="event-dot ${event.action === 'suspended' ? 'warning' : ''}"></span><div><strong>${esc(event.action.replaceAll('_', ' '))}</strong><p>${esc(event.details)}</p><small>${esc(event.actor)} · ${esc(fmtDate(event.created_at))}</small></div></article>`).join('') : '<p class="muted">No activation events yet.</p>';
+      <div><small>${esc(t('dev.plan'))}</small><strong>${esc(data.plan)}</strong></div>
+      <div><small>${esc(t('dev.started'))}</small><strong>${esc(fmtDate(data.started_at))}</strong></div>
+      <div><small>${esc(t('dev.expires'))}</small><strong>${esc(fmtDate(data.expires_at))}</strong></div>
+      <div><small>${esc(t('dev.daysRemaining'))}</small><strong>${esc(data.days_remaining)}</strong></div>
+      <div><small>${esc(t('dev.activated'))}</small><strong>${esc(fmtDate(data.activated_at))}</strong></div>
+      <div><small>${esc(t('dev.lastActivity'))}</small><strong>${esc(fmtDate(data.last_activity_at))}</strong></div>`;
+    const eventLabel = action => t(`event.${action}`) === `event.${action}` ? action.replaceAll('_', ' ') : t(`event.${action}`);
+    $('#dev-events').innerHTML = data.events.length ? data.events.map(event => `<article class="dev-event"><span class="event-dot ${event.action === 'suspended' ? 'warning' : ''}"></span><div><strong>${esc(eventLabel(event.action))}</strong><p>${esc(event.details)}</p><small>${esc(event.actor)} · ${esc(fmtDate(event.created_at))}</small></div></article>`).join('') : `<p class="muted">${esc(t('dev.noEvents'))}</p>`;
     $('#dev-suspend').disabled = data.status === 'suspended';
     $('#dev-restore').disabled = data.status !== 'suspended';
-  } catch (err) { toast('Developer console: ' + err.message); }
+  } catch (err) { toast(t('dev.consoleError', { error: err.message })); }
 }
 $('#dev-refresh').addEventListener('click', renderDeveloperDashboard);
 $('#dev-renew-form').addEventListener('submit', async e => {
@@ -234,18 +303,18 @@ $('#dev-renew-form').addEventListener('submit', async e => {
     $('#dev-payment-ref').value = '';
     me.subscriptionStatus = data.status;
     renderDeveloperDashboard();
-    toast('Annual subscription recorded and activated for 365 days.');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('dev.renewed'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 $('#dev-suspend').addEventListener('click', async () => {
-  const reason = prompt('Reason for suspending this installation:');
+  const reason = prompt(t('dev.suspendPrompt'));
   if (!reason?.trim()) return;
-  try { await api('/api/developer/subscription/suspend', { method: 'POST', body: JSON.stringify({ reason }) }); renderDeveloperDashboard(); toast('Service suspended; event recorded.'); }
-  catch (err) { toast('⚠️ ' + err.message); }
+  try { await api('/api/developer/subscription/suspend', { method: 'POST', body: JSON.stringify({ reason }) }); renderDeveloperDashboard(); toast(t('dev.suspended')); }
+  catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 $('#dev-restore').addEventListener('click', async () => {
-  try { await api('/api/developer/subscription/restore', { method: 'POST', body: '{}' }); renderDeveloperDashboard(); toast('Subscription restored.'); }
-  catch (err) { toast('⚠️ ' + err.message); }
+  try { await api('/api/developer/subscription/restore', { method: 'POST', body: '{}' }); renderDeveloperDashboard(); toast(t('dev.restored')); }
+  catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 $('#login-form').addEventListener('submit', async e => {
@@ -269,7 +338,7 @@ $('#login-form').addEventListener('submit', async e => {
       await syncQueue();
     }
   } catch (e2) {
-    err.textContent = '⚠️ ' + e2.message;
+    err.textContent = t('err.prefix', { message: e2.message });
     err.hidden = false;
   }
 });
@@ -287,28 +356,43 @@ async function loadConfig() {
 }
 
 // ---------- Tabs ----------
+// View renderers are async and may hit an expired session; never let a rejected
+// promise bubble up as an unhandled error in the console.
+function safeRender(fn) {
+  try {
+    const result = fn();
+    if (result && typeof result.catch === 'function') {
+      result.catch(err => { if (err?.message && !document.querySelector('#login-screen:not([hidden])')) toast(t('err.prefix', { message: err.message })); });
+    }
+  } catch (err) {
+    toast(t('err.prefix', { message: err.message }));
+  }
+}
 $$('.tab').forEach(btn => btn.addEventListener('click', () => {
   $$('.tab').forEach(b => b.classList.toggle('active', b === btn));
   $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + btn.dataset.view));
-  if (btn.dataset.view === 'inventory') renderInventory();
-  if (btn.dataset.view === 'sales') renderSales();
-  if (btn.dataset.view === 'customers') renderCustomers();
-  if (btn.dataset.view === 'settings') renderSettings();
-  if (btn.dataset.view === 'subscription') renderSubscriptionStatus();
-  if (btn.dataset.view === 'developer') renderDeveloperDashboard();
+  if (btn.dataset.view === 'inventory') safeRender(renderInventory);
+  if (btn.dataset.view === 'sales') safeRender(renderSales);
+  if (btn.dataset.view === 'customers') safeRender(renderCustomers);
+  if (btn.dataset.view === 'settings') safeRender(renderSettings);
+  if (btn.dataset.view === 'subscription') safeRender(renderSubscriptionStatus);
+  if (btn.dataset.view === 'developer') safeRender(renderDeveloperDashboard);
 }));
 
 // ---------- Shifts ----------
-async function refreshShift() {
-  try { shift = (await api('/api/shifts/current')).shift; } catch { shift = null; }
+function renderShiftBadge() {
   const badge = $('#shift-badge');
   if (shift) {
-    badge.textContent = `🟢 Shift #${shift.id} · ${shift.register}`;
+    badge.textContent = t('top.shiftBadge', { id: shift.id, register: shift.register });
     badge.classList.add('open');
   } else {
-    badge.textContent = '⚪ No shift';
+    badge.textContent = t('top.noShiftBadge');
     badge.classList.remove('open');
   }
+}
+async function refreshShift() {
+  try { shift = (await api('/api/shifts/current')).shift; } catch { shift = null; }
+  renderShiftBadge();
 }
 
 async function ensureShift() {
@@ -316,17 +400,24 @@ async function ensureShift() {
   if (!shift) openShiftModal('open');
 }
 
+function syncShiftModalCurrency() {
+  $('#shift-float-label').textContent = t('shift.openingFloat', { currency: settings.currency });
+  $('#shift-counted-label').textContent = t('shift.counted', { currency: settings.currency });
+  $('#expected-cash').textContent = money(0);
+  $('#variance').textContent = money(0);
+}
 function openShiftModal(mode) {
-  $('#shift-modal-title').textContent = mode === 'open' ? '🟢 Open shift' : '🔴 Close shift';
+  $('#shift-modal-title').textContent = mode === 'open' ? t('shift.openTitle') : t('shift.closeTitle');
   $('#shift-open-fields').hidden = mode !== 'open';
   $('#shift-close-fields').hidden = mode !== 'close';
-  $('#shift-confirm').textContent = mode === 'open' ? 'Open shift' : 'Close shift';
+  $('#shift-confirm').textContent = mode === 'open' ? t('shift.openBtn') : t('shift.closeBtn');
   $('#shift-confirm').dataset.mode = mode;
+  syncShiftModalCurrency();
   if (mode === 'close' && shift) {
     // Expected cash is computed server-side on close; show estimate from sales
     $('#expected-cash').textContent = '—';
     $('#closing-amount').value = '';
-    $('#variance').textContent = '$0.00';
+    $('#variance').textContent = money(0);
   }
   $('#shift-modal').hidden = false;
 }
@@ -337,27 +428,28 @@ $('#shift-confirm').addEventListener('click', async () => {
   try {
     if (mode === 'open') {
       shift = await api('/api/shifts/open', { method: 'POST', body: JSON.stringify({ openingFloat: parseFloat($('#opening-float').value) || 0 }) });
-      toast(`🟢 Shift #${shift.id} opened`);
-      notifyUser('Shift opened', `Register ${shift.register} is ready.`, { level: 'success', key: `shift-open-${shift.id}` });
+      toast(t('shift.opened', { id: shift.id }));
+      notifyUser(t('notify.shiftOpened'), t('shift.openedNote', { register: shift.register }), { level: 'success', key: `shift-open-${shift.id}` });
     } else {
       const result = await api('/api/shifts/close', { method: 'POST', body: JSON.stringify({ closingAmount: parseFloat($('#closing-amount').value) || 0 }) });
       const closedId = shift?.id;
       const closedRegister = shift?.register || terminalRegister();
       shift = null;
-      toast(`🔴 Shift closed. Variance: ${money(result.variance)}`);
-      notifyUser('Shift closed', `Register ${closedRegister} was closed. Variance ${money(result.variance)}.`, { level: 'warning', key: `shift-close-${closedId}` });
+      toast(t('shift.closed', { variance: money(result.variance) }));
+      notifyUser(t('notify.shiftClosed'), t('shift.closedNote', { register: closedRegister, variance: money(result.variance) }), { level: 'warning', key: `shift-close-${closedId}` });
     }
     $('#shift-modal').hidden = true;
     await refreshShift();
-  } catch (e) { toast('⚠️ ' + e.message); }
+  } catch (e) { toast(t('err.prefix', { message: e.message })); }
 });
 
 // ---------- POS ----------
 function categories() { return ['All', ...new Set(products.map(p => p.category))]; }
+const categoryLabel = c => I18N.categoryLabel(c);
 
 function renderCategories() {
   $('#categories').innerHTML = categories().map(c =>
-    `<button class="cat-btn ${c === activeCategory ? 'active' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('');
+    `<button class="cat-btn ${c === activeCategory ? 'active' : ''}" data-cat="${esc(c)}" dir="auto">${esc(categoryLabel(c))}</button>`).join('');
   $$('.cat-btn').forEach(b => b.addEventListener('click', () => { activeCategory = b.dataset.cat; renderCategories(); renderGrid(); }));
 }
 
@@ -374,11 +466,11 @@ function renderGrid() {
   $('#grid').innerHTML = list.map(p => {
     const out = p.stock <= 0;
     const low = p.stock > 0 && p.stock <= +settings.low_stock_threshold;
-    return `<div class="product ${out ? 'out' : ''}" data-id="${p.id}" title="${out ? 'Out of stock' : 'Add to cart'}">
+    return `<div class="product ${out ? 'out' : ''}" data-id="${p.id}" title="${esc(out ? t('pos.outOfStock') : t('pos.addToCart'))}">
       <span class="emoji">${p.emoji || '📦'}</span>
-      <div class="name">${esc(p.name)}</div>
-      <div class="price">${money(p.price)}<small style="font-size:11px;color:var(--muted);font-weight:400"> /${esc(p.unit)}</small></div>
-      <div class="stock ${low ? 'low' : ''}">${out ? 'Out of stock' : p.stock + ' in stock'}</div>
+      <div class="name" dir="auto">${esc(p.name)}</div>
+      <div class="price">${money(p.price)}<small style="font-size:11px;color:var(--muted);font-weight:400"> / ${esc(unitLabel(p.unit))}</small></div>
+      <div class="stock ${low ? 'low' : ''}">${out ? esc(t('pos.outOfStock')) : esc(t('pos.inStock', { n: p.stock }))}</div>
     </div>`;
   }).join('');
   $$('.product').forEach(el => el.addEventListener('click', () => addToCart(+el.dataset.id)));
@@ -388,7 +480,7 @@ function addToCart(id) {
   const p = products.find(x => x.id === id);
   if (!p) return;
   const qty = cart[id] || 0;
-  if (qty >= p.stock) { toast(`⚠️ Only ${p.stock} × ${p.name} in stock`); return; }
+  if (qty >= p.stock) { toast(t('pos.onlyInStock', { n: p.stock, name: p.name })); return; }
   cart[id] = qty + 1;
   renderCart();
 }
@@ -396,7 +488,7 @@ function addToCart(id) {
 function setQty(id, qty) {
   const p = products.find(x => x.id === id);
   if (qty <= 0) delete cart[id];
-  else if (qty > p.stock) { toast(`⚠️ Only ${p.stock} in stock`); return; }
+  else if (qty > p.stock) { toast(t('pos.onlyStock', { n: p.stock })); return; }
   else cart[id] = qty;
   renderCart();
 }
@@ -445,10 +537,10 @@ function renderCart() {
   $('#cart-items').innerHTML = entries.map(({ product: p, qty }) => `
     <div class="cart-item">
       <span class="emoji">${p.emoji || '📦'}</span>
-      <div class="info"><div class="n">${esc(p.name)}</div><div class="p">${money(p.price)} / ${esc(p.unit)}</div></div>
+      <div class="info"><div class="n" dir="auto">${esc(p.name)}</div><div class="p">${money(p.price)} / ${esc(unitLabel(p.unit))}</div></div>
       <div class="qty"><button data-act="dec" data-id="${p.id}">−</button><span>${qty}</span><button data-act="inc" data-id="${p.id}">+</button></div>
       <div class="line-total">${money(p.price * qty)}</div>
-      <button class="remove" data-act="del" data-id="${p.id}" title="Remove">🗑</button>
+      <button class="remove" data-act="del" data-id="${p.id}" title="${esc(t('cart.remove'))}">🗑</button>
     </div>`).join('');
   $$('#cart-items [data-act]').forEach(b => b.addEventListener('click', () => {
     const id = +b.dataset.id;
@@ -456,26 +548,26 @@ function renderCart() {
     if (b.dataset.act === 'dec') setQty(id, (cart[id] || 0) - 1);
     if (b.dataset.act === 'del') setQty(id, 0);
   }));
-  const t = totals();
-  $('#sum-subtotal').textContent = money(t.subtotal);
-  $('#sum-discount').textContent = '−' + money(t.discount);
-  $('#sum-points').textContent = '−' + money(t.pointsDiscount);
-  $('#sum-tax').textContent = money(t.tax);
-  $('#sum-total').textContent = money(t.total);
+  const t2 = totals();
+  $('#sum-subtotal').textContent = money(t2.subtotal);
+  $('#sum-discount').textContent = '−' + money(t2.discount);
+  $('#sum-points').textContent = '−' + money(t2.pointsDiscount);
+  $('#sum-tax').textContent = money(t2.tax);
+  $('#sum-total').textContent = money(t2.total);
   $('#checkout-btn').disabled = entries.length === 0;
   const cust = selectedCustomer();
   $('#points-row').hidden = !cust;
   if (cust) {
-    const earn = Math.floor(t.total * (parseFloat(settings.points_per_dollar) || 0));
-    $('#points-info').textContent = `⭐ ${cust.points} pts · earns ${earn} this sale`;
+    const earn = Math.floor(t2.total * (parseFloat(settings.points_per_dollar) || 0));
+    $('#points-info').textContent = t('cart.pointsInfo', { points: cust.points, earn });
     $('#redeem-points').disabled = cust.points <= 0;
   }
 }
 
 function renderCustomerSelect() {
   const current = $('#customer-select').value;
-  $('#customer-select').innerHTML = '<option value="">👤 Walk-in customer</option>' +
-    customers.map(c => `<option value="${c.id}">${esc(c.name)} (${c.points} pts)</option>`).join('');
+  $('#customer-select').innerHTML = `<option value="">${esc(t('cart.walkIn'))}</option>` +
+    customers.map(c => `<option value="${c.id}">${esc(t('cart.option', { name: c.name, points: c.points }))}</option>`).join('');
   $('#customer-select').value = current;
 }
 $('#customer-select').addEventListener('change', renderCart);
@@ -491,8 +583,8 @@ $('#barcode').addEventListener('keydown', e => {
   e.target.value = '';
   if (!code) return;
   const p = products.find(x => String(x.barcode) === code);
-  if (p) { addToCart(p.id); toast(`✅ ${p.name} added`); }
-  else toast(`❌ No product with barcode ${code}`);
+  if (p) { addToCart(p.id); toast(t('pos.added', { name: p.name })); }
+  else toast(t('pos.noBarcode', { code }));
 });
 
 // ---------- Checkout ----------
@@ -501,7 +593,7 @@ $$('[data-close]').forEach(b => b.addEventListener('click', () => b.closest('.mo
 $$('.modal-backdrop').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.hidden = true; }));
 
 $('#checkout-btn').addEventListener('click', async () => {
-  if (!shift) { toast('⚠️ Open a shift first (click the shift badge)'); openShiftModal('open'); return; }
+  if (!shift) { toast(t('shift.openFirst')); openShiftModal('open'); return; }
   payMethod = 'cash';
   $$('.pay-btn').forEach(b => b.classList.toggle('active', b.dataset.pay === 'cash'));
   $('#cash-fields').style.display = '';
@@ -531,39 +623,39 @@ $$('.quick button').forEach(b => b.addEventListener('click', () => {
 }));
 
 $('#complete-sale').addEventListener('click', async () => {
-  const t = totals();
+  const tot = totals();
   const err = $('#checkout-error');
   err.hidden = true;
   const cust = selectedCustomer();
   const payload = {
     items: cartEntries().map(e => ({ id: e.product.id, qty: e.qty })),
-    discountPct: t.discountPct,
+    discountPct: tot.discountPct,
     payment: 'cash',
     tendered: parseFloat($('#tendered').value) || 0,
     customerId: cust?.id ?? null,
-    redeemPoints: t.redeem,
+    redeemPoints: tot.redeem,
     idempotencyKey: (crypto.randomUUID ? crypto.randomUUID() : `pos-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   };
-  if (payMethod === 'cash' && payload.tendered < t.total) {
-    err.textContent = `⚠️ Tendered amount is less than the total (${money(t.total)}).`;
+  if (payMethod === 'cash' && payload.tendered < tot.total) {
+    err.textContent = t('checkout.lessThanTotal', { total: money(tot.total) });
     err.hidden = false;
     return;
   }
   try {
     lastSale = await api('/api/sales', { method: 'POST', body: JSON.stringify(payload) });
-    notifyUser('Sale completed', `Cash sale #${lastSale.id} · ${money(lastSale.total)}.`, { level: 'success', key: `sale-${lastSale.id}` });
+    notifyUser(t('checkout.saleDone'), t('checkout.saleDoneNote', { id: lastSale.id, total: money(lastSale.total) }), { level: 'success', key: `sale-${lastSale.id}` });
     afterSale();
   } catch (e) {
     if (e.offline) {
       queueSale(payload);
-      toast('📶 Offline — sale queued and will sync automatically');
-      notifyUser('Sale queued offline', 'It will sync when the connection returns.', { level: 'warning', key: `queued-${payload.idempotencyKey}` });
+      toast(t('checkout.offlineQueued'));
+      notifyUser(t('checkout.queuedTitle'), t('checkout.queuedNote'), { level: 'warning', key: `queued-${payload.idempotencyKey}` });
       cart = {}; $('#discount').value = 0; $('#redeem-points').checked = false;
       renderCart();
       $('#checkout-modal').hidden = true;
       return;
     }
-    err.textContent = '⚠️ ' + e.message;
+    err.textContent = t('err.prefix', { message: e.message });
     err.hidden = false;
   }
 });
@@ -581,32 +673,34 @@ async function afterSale() {
 }
 
 function showReceipt(sale) {
+  const receiptModal = $('#receipt-modal .modal');
+  if (receiptModal) receiptModal.dir = I18N.dir();
   const rows = sale.items.map(i =>
-    `<div class="r-row"><span>${i.emoji} ${esc(i.name)} ×${i.qty}</span><span>${money(i.line_total)}</span></div>`).join('');
+    `<div class="r-row"><span dir="auto">${i.emoji} ${esc(i.name)} <bdi>×${i.qty}</bdi></span><span class="amount">${money(i.line_total)}</span></div>`).join('');
   const taxRows = sale.items.length && sale.items.every(i => i.tax_rate != null && i.tax != null)
     ? Object.entries(sale.items.reduce((groups, i) => {
         const key = Number(i.tax_rate);
         groups[key] = (groups[key] || 0) + Number(i.tax);
         return groups;
-      }, {})).map(([rate, amount]) => `<div class="r-row"><span>Tax (${(Number(rate) * 100).toFixed(0)}%)</span><span>${money(amount)}</span></div>`).join('')
-    : `<div class="r-row"><span>Tax</span><span>${money(sale.tax)}</span></div>`;
+      }, {})).map(([rate, amount]) => `<div class="r-row"><span>${esc(t('receipt.taxRate', { rate: (Number(rate) * 100).toFixed(0) }))}</span><span class="amount">${money(amount)}</span></div>`).join('')
+    : `<div class="r-row"><span>${esc(t('receipt.tax'))}</span><span class="amount">${money(sale.tax)}</span></div>`;
   $('#receipt-body').innerHTML = `
     <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(terminalRegister())}</div>
     ${settings.store_address ? `<div>${esc(settings.store_address)}</div>` : ''}
     ${settings.store_phone ? `<div>${esc(settings.store_phone)}</div>` : ''}
-    ${settings.vat_number ? `<div>VAT: ${esc(settings.vat_number)}</div>` : ''}
-    <div>Sale #${sale.id} · ${new Date(sale.date).toLocaleString()}</div>
-    <div>Cashier: ${esc(me.name || me.username)}</div></div>
+    ${settings.vat_number ? `<div>${esc(t('receipt.vat', { vat: settings.vat_number }))}</div>` : ''}
+    <div>${esc(t('receipt.saleNo', { id: sale.id, date: fmtDate(sale.date) }))}</div>
+    <div>${esc(t('receipt.cashier', { name: me.name || me.username }))}</div></div>
     ${rows}
-    <div class="r-row"><span>Subtotal</span><span>${money(sale.subtotal)}</span></div>
-    ${sale.discount ? `<div class="r-row"><span>Discount (${sale.discount_pct}%)</span><span>−${money(sale.discount)}</span></div>` : ''}
-    ${sale.points_redeemed ? `<div class="r-row"><span>Points redeemed (${sale.points_redeemed})</span><span>−${money(sale.points_redeemed * pointsValue())}</span></div>` : ''}
+    <div class="r-row"><span>${esc(t('receipt.subtotal'))}</span><span class="amount">${money(sale.subtotal)}</span></div>
+    ${sale.discount ? `<div class="r-row"><span>${esc(t('receipt.discount', { pct: sale.discount_pct }))}</span><span class="amount">−${money(sale.discount)}</span></div>` : ''}
+    ${sale.points_redeemed ? `<div class="r-row"><span>${esc(t('receipt.pointsRedeemed', { points: sale.points_redeemed }))}</span><span class="amount">−${money(sale.points_redeemed * pointsValue())}</span></div>` : ''}
     ${taxRows}
-    <div class="r-row r-total"><span>TOTAL</span><span>${money(sale.total)}</span></div>
-    <div class="r-row"><span>Payment</span><span>${sale.payment === 'card' ? '💳 Card' : '💵 Cash'}</span></div>
-    ${sale.tendered != null ? `<div class="r-row"><span>Tendered</span><span>${money(sale.tendered)}</span></div><div class="r-row"><span>Change</span><span>${money(sale.change)}</span></div>` : ''}
-    ${sale.points_earned ? `<div class="r-row"><span>⭐ Points earned</span><span>+${sale.points_earned}</span></div>` : ''}
-    <div class="r-foot">${esc(settings.receipt_footer || 'Thank you for shopping!')}</div>`;
+    <div class="r-row r-total"><span>${esc(t('receipt.totalLabel'))}</span><span class="amount">${money(sale.total)}</span></div>
+    <div class="r-row"><span>${esc(t('receipt.payment'))}</span><span>${sale.payment === 'card' ? esc(t('sales.payCard')) : esc(t('sales.payCash'))}</span></div>
+    ${sale.tendered != null ? `<div class="r-row"><span>${esc(t('receipt.tendered'))}</span><span class="amount">${money(sale.tendered)}</span></div><div class="r-row"><span>${esc(t('receipt.change'))}</span><span class="amount">${money(sale.change)}</span></div>` : ''}
+    ${sale.points_earned ? `<div class="r-row"><span>${esc(t('receipt.pointsEarned'))}</span><span>+${sale.points_earned}</span></div>` : ''}
+    <div class="r-foot">${esc(settings.receipt_footer || t('receipt.footerDefault'))}</div>`;
   openModal('#receipt-modal');
 }
 $('#print-receipt').addEventListener('click', () => window.print());
@@ -624,9 +718,9 @@ function updateQueueBadge() {
   const n = getQueue().length;
   const badge = $('#queue-badge');
   badge.hidden = n === 0;
-  badge.textContent = `📶 ${n} queued`;
+  badge.textContent = t('queue.badge', { n });
   const issues = getQueue().map(x => x.lastError).filter(Boolean);
-  badge.title = issues.length ? `Tap to retry. Last error: ${issues[0]}` : 'Tap to sync queued sales';
+  badge.title = issues.length ? t('queue.syncError', { error: issues[0] }) : t('queue.syncTitle');
 }
 $('#queue-badge').addEventListener('click', syncQueue);
 async function syncQueue() {
@@ -648,16 +742,16 @@ async function syncQueue() {
     products = await api('/api/products').catch(() => products);
     scanStockAlerts(products);
     renderGrid();
-    toast(`✅ Synced ${q.length - remaining.length} offline sale(s)`);
+    toast(t('queue.synced', { n: q.length - remaining.length }));
   }
   if (remaining.length) {
-    toast(`⚠️ ${remaining.length} queued sale(s) need review or retry`);
-    notifyUser('Queued sales need attention', `${remaining.length} sale(s) could not sync. Open the queue badge to retry.`, { level: 'critical', key: 'queue-sync-failed' });
+    toast(t('queue.review', { n: remaining.length }));
+    notifyUser(t('notify.queueAttention'), t('notify.queueAttentionNote', { n: remaining.length }), { level: 'critical', key: 'queue-sync-failed' });
   }
 }
-window.addEventListener('offline', () => notifyUser('Connection lost', 'New sales will be queued until the connection returns.', { level: 'critical', key: 'network-offline' }));
+window.addEventListener('offline', () => notifyUser(t('notify.connectionLost'), t('notify.connectionLostNote'), { level: 'critical', key: 'network-offline' }));
 window.addEventListener('online', () => {
-  notifyUser('Connection restored', 'Checking queued sales and refreshing stock.', { level: 'success', key: `network-online-${Math.floor(Date.now() / 60000)}` });
+  notifyUser(t('notify.connectionBack'), t('notify.connectionBackNote'), { level: 'success', key: `network-online-${Math.floor(Date.now() / 60000)}` });
   syncQueue();
 });
 setInterval(async () => {
@@ -672,56 +766,57 @@ setInterval(async () => {
 
 // ---------- Inventory ----------
 function renderInventory() {
-  $('#inv-count').textContent = `(${products.length} products)`;
+  $('#inv-count').textContent = t('inv.count', { n: products.length });
   const admin = me.role === 'admin';
   $('#inv-body').innerHTML = products.map(p => {
-    const badge = p.stock <= 0 ? '<span class="stock-badge out">Out</span>' : p.stock <= +settings.low_stock_threshold ? `<span class="stock-badge low">${p.stock}</span>` : `<span class="stock-badge">${p.stock}</span>`;
+    const badge = p.stock <= 0 ? `<span class="stock-badge out">${esc(t('inv.out'))}</span>` : p.stock <= +settings.low_stock_threshold ? `<span class="stock-badge low">${p.stock}</span>` : `<span class="stock-badge">${p.stock}</span>`;
     return `<tr>
       <td style="font-size:22px">${p.emoji || '📦'}</td>
-      <td><strong>${esc(p.name)}</strong></td><td>${esc(p.category)}</td><td>${esc(p.barcode)}</td>
-      <td>${money(p.price)}</td><td>${esc(p.unit)}</td><td>${badge}</td>
-      ${admin ? `<td><button class="icon-btn" data-edit="${p.id}" title="Edit">✏️</button><button class="icon-btn" data-del="${p.id}" title="Delete">🗑</button></td>` : '<td></td>'}</tr>`;
+      <td><strong dir="auto">${esc(p.name)}</strong></td><td dir="auto">${esc(p.category)}</td><td>${esc(p.barcode)}</td>
+      <td>${money(p.price)}</td><td>${esc(unitLabel(p.unit))}</td><td>${badge}</td>
+      ${admin ? `<td><button class="icon-btn" data-edit="${p.id}" title="${esc(t('inv.edit'))}">✏️</button><button class="icon-btn" data-del="${p.id}" title="${esc(t('inv.delete'))}">🗑</button></td>` : '<td></td>'}</tr>`;
   }).join('');
   $$('#inv-body [data-edit]').forEach(b => b.addEventListener('click', () => openProductForm(products.find(p => p.id === +b.dataset.edit))));
   $$('#inv-body [data-del]').forEach(b => b.addEventListener('click', async () => {
-    if (!confirm('Remove this product from the catalogue?')) return;
+    if (!confirm(t('inv.removeConfirm'))) return;
     await api(`/api/products/${b.dataset.del}`, { method: 'DELETE' });
     products = await api('/api/products');
     scanStockAlerts(products);
     renderCategories(); renderGrid(); renderInventory();
-    toast('🗑 Product removed');
+    toast(t('inv.removed'));
   }));
 }
 
 function openProductForm(p) {
-  $('#product-form-title').textContent = p ? 'Edit product' : 'Add product';
+  $('#product-form-title').textContent = p ? t('prod.titleEdit') : t('prod.titleAdd');
   $('#f-id').value = p ? p.id : '';
   $('#f-name').value = p ? p.name : '';
-  $('#f-category').value = p ? p.category : '';
+  $('#f-category').value = p ? categoryLabel(p.category) : '';
   $('#f-price').value = p ? p.price : '';
   $('#f-stock').value = p ? p.stock : '';
-  $('#f-unit').value = p ? p.unit : 'each';
+  $('#f-unit').value = p ? unitLabel(p.unit) : unitLabel('each');
   $('#f-emoji').value = p ? (p.emoji || '📦') : '📦';
   $('#f-barcode').value = p ? p.barcode : '';
   $('#f-tax-rate').value = p && p.tax_rate != null ? p.tax_rate : '';
-  $('#cat-list').innerHTML = categories().filter(c => c !== 'All').map(c => `<option value="${esc(c)}">`).join('');
+  $('#cat-list').innerHTML = categories().filter(c => c !== 'All').map(c => `<option value="${esc(categoryLabel(c))}">`).join('');
   openModal('#product-modal');
 }
 $('#restore-defaults-btn').addEventListener('click', async () => {
-  if (!confirm('Add any missing starter products and reactivate removed starter items? Existing prices and stock will be kept.')) return;
+  if (!confirm(t('inv.starterConfirm'))) return;
   try {
     const result = await api('/api/products/defaults', { method: 'POST', body: '{}' });
     products = await api('/api/products');
     scanStockAlerts(products);
     renderCategories(); renderGrid(); renderInventory();
-    toast(`✅ Starter catalog ready: ${result.added} added, ${result.reactivated} reactivated. Edit prices in Inventory.`);
-  } catch (e) { toast('⚠️ ' + e.message); }
+    toast(t('inv.starterDone', { added: result.added, reactivated: result.reactivated }));
+  } catch (e) { toast(t('err.prefix', { message: e.message })); }
 });
 $('#add-product-btn').addEventListener('click', () => openProductForm(null));
 $('#product-form').addEventListener('submit', async e => {
   e.preventDefault();
   const id = $('#f-id').value;
-  const body = { name: $('#f-name').value, category: $('#f-category').value, price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: $('#f-unit').value, emoji: $('#f-emoji').value, barcode: $('#f-barcode').value, taxRate: $('#f-tax-rate').value };
+  // Submit canonical English values so category filters, reports and CSV exports stay consistent.
+  const body = { name: $('#f-name').value, category: I18N.categoryCanonical($('#f-category').value), price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: unitCanonical($('#f-unit').value), emoji: $('#f-emoji').value, barcode: $('#f-barcode').value, taxRate: $('#f-tax-rate').value };
   try {
     if (id) await api(`/api/products/${id}`, { method: 'PUT', body: JSON.stringify(body) });
     else await api('/api/products', { method: 'POST', body: JSON.stringify(body) });
@@ -729,24 +824,24 @@ $('#product-form').addEventListener('submit', async e => {
     scanStockAlerts(products);
     $('#product-modal').hidden = true;
     renderCategories(); renderGrid(); renderInventory();
-    toast('✅ Product saved');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('inv.saved'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 // ---------- Customers ----------
 function renderCustomers() {
-  $('#cust-count').textContent = `(${customers.length} registered)`;
+  $('#cust-count').textContent = t('cust.count', { n: customers.length });
   const admin = me.role === 'admin';
   $('#cust-body').innerHTML = customers.map(c => `<tr>
-    <td><strong>${esc(c.name)}</strong></td><td>${esc(c.phone || '—')}</td><td>${esc(c.email || '—')}</td>
-    <td>⭐ ${c.points}</td><td>${new Date(c.created_at).toLocaleDateString()}</td>
-    ${admin ? `<td><button class="icon-btn" data-edit="${c.id}" title="Edit">✏️</button></td>` : '<td></td>'}</tr>`).join('')
-    || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">No customers yet.</td></tr>';
+    <td><strong dir="auto">${esc(c.name)}</strong></td><td dir="ltr">${esc(c.phone || '—')}</td><td dir="ltr">${esc(c.email || '—')}</td>
+    <td>⭐ ${c.points}</td><td>${fmtDateShort(c.created_at)}</td>
+    ${admin ? `<td><button class="icon-btn" data-edit="${c.id}" title="${esc(t('inv.edit'))}">✏️</button></td>` : '<td></td>'}</tr>`).join('')
+    || `<tr><td colspan="6" style="text-align:center;color:var(--muted)">${esc(t('cust.none'))}</td></tr>`;
   $$('#cust-body [data-edit]').forEach(b => b.addEventListener('click', () => openCustomerForm(customers.find(c => c.id === +b.dataset.edit))));
 }
 
 function openCustomerForm(c) {
-  $('#customer-form-title').textContent = c ? 'Edit customer' : 'Add customer';
+  $('#customer-form-title').textContent = c ? t('cust.editTitle') : t('cust.addTitle');
   $('#c-id').value = c ? c.id : '';
   $('#c-name').value = c ? c.name : '';
   $('#c-phone').value = c ? (c.phone || '') : '';
@@ -767,60 +862,60 @@ $('#customer-form').addEventListener('submit', async e => {
     customers = await api('/api/customers');
     $('#customer-modal').hidden = true;
     renderCustomerSelect(); renderCustomers(); renderCart();
-    toast('✅ Customer saved');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('cust.saved'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 // ---------- Sales ----------
 async function renderSales() {
   const [stats, sales, shifts] = await Promise.all([api('/api/stats'), api('/api/sales'), api('/api/shifts')]);
-  const t = stats.today;
+  const today = stats.today;
   $('#stats').innerHTML = `
-    <div class="stat"><div class="label">💰 Revenue today</div><div class="value">${money(t.revenue)}</div></div>
-    <div class="stat"><div class="label">🧾 Transactions today</div><div class="value">${t.transactions}</div></div>
-    <div class="stat"><div class="label">📦 Items sold today</div><div class="value">${t.items}</div></div>
-    <div class="stat"><div class="label">🏷 All-time revenue</div><div class="value">${money(stats.total.revenue)}</div></div>
-    <div class="stat"><div class="label">🧾 All-time transactions</div><div class="value">${stats.total.transactions}</div></div>`;
+    <div class="stat"><div class="label">${esc(t('sales.revenueToday'))}</div><div class="value"><bdi>${money(today.revenue)}</bdi></div></div>
+    <div class="stat"><div class="label">${esc(t('sales.txToday'))}</div><div class="value">${today.transactions}</div></div>
+    <div class="stat"><div class="label">${esc(t('sales.itemsToday'))}</div><div class="value">${today.items}</div></div>
+    <div class="stat"><div class="label">${esc(t('sales.allRevenue'))}</div><div class="value">${money(stats.total.revenue)}</div></div>
+    <div class="stat"><div class="label">${esc(t('sales.allTx'))}</div><div class="value">${stats.total.transactions}</div></div>`;
   const maxRev = stats.top[0]?.revenue || 1;
   $('#top-products').innerHTML = stats.top.length ? stats.top.map(p => `
-    <div class="top-row"><span>${p.emoji} ${esc(p.name)} <span class="muted">×${p.qty}</span></span><strong>${money(p.revenue)}</strong></div>
+    <div class="top-row"><span>${p.emoji} <span dir="auto">${esc(p.name)}</span> <span class="muted">×${p.qty}</span></span><strong>${money(p.revenue)}</strong></div>
     <div class="bar"><div style="width:${(p.revenue / maxRev * 100).toFixed(1)}%"></div></div>`).join('')
-    : '<p class="muted">No sales yet.</p>';
+    : `<p class="muted">${esc(t('sales.noSales'))}</p>`;
   $('#by-cashier').innerHTML = stats.byCashier.length ? stats.byCashier.map(c =>
-    `<div class="top-row"><span>👤 ${esc(c.cashier)} <span class="muted">${c.transactions} sales</span></span><strong>${money(c.revenue)}</strong></div>`).join('')
-    : '<p class="muted">No sales yet.</p>';
+    `<div class="top-row"><span>👤 ${esc(c.cashier)} <span class="muted">${esc(t('sales.nSales', { n: c.transactions }))}</span></span><strong>${money(c.revenue)}</strong></div>`).join('')
+    : `<p class="muted">${esc(t('sales.noSales'))}</p>`;
   $('#low-stock').innerHTML = stats.lowStock.length ? stats.lowStock.map(p =>
-    `<div class="top-row"><span>${p.emoji} ${esc(p.name)}</span><span class="stock-badge ${p.stock <= 0 ? 'out' : 'low'}">${p.stock} left</span></div>`).join('')
-    : '<p class="muted">✅ All products are well stocked.</p>';
+    `<div class="top-row"><span>${p.emoji} <span dir="auto">${esc(p.name)}</span></span><span class="stock-badge ${p.stock <= 0 ? 'out' : 'low'}">${esc(t('sales.nLeft', { n: p.stock }))}</span></div>`).join('')
+    : `<p class="muted">${esc(t('sales.allStocked'))}</p>`;
 
   const filter = $('#sales-filter').value;
   const visible = sales.filter(s => filter === 'all' || s.status === filter);
   const admin = me.role === 'admin';
   $('#sales-body').innerHTML = visible.length ? visible.map(s => `<tr>
-    <td>#${s.id}</td><td>${new Date(s.date).toLocaleString()}</td>
-    <td>${esc(s.cashier_name || '—')}</td><td>${esc(s.customer_name || '—')}</td>
+    <td>#${s.id}</td><td>${fmtDate(s.date)}</td>
+    <td>${esc(s.cashier_name || '—')}</td><td dir="auto">${esc(s.customer_name || '—')}</td>
     <td>${s.items.reduce((a, i) => a + i.qty, 0)}</td>
-    <td>${s.payment === 'card' ? '💳 Card' : '💵 Cash'}</td>
-    <td><span class="status-badge ${s.status}">${s.status}</span></td>
+    <td>${s.payment === 'card' ? esc(t('sales.payCard')) : esc(t('sales.payCash'))}</td>
+    <td><span class="status-badge ${s.status}">${esc(statusLabel(s.status))}</span></td>
     <td><strong>${money(s.total)}</strong></td>
-    ${admin && s.status === 'completed' ? `<td><button class="icon-btn" data-void="${s.id}" title="Void sale">🚫</button><button class="icon-btn" data-refund="${s.id}" title="Refund sale">↩️</button></td>` : '<td></td>'}</tr>`).join('')
-    : '<tr><td colspan="9" style="text-align:center;color:var(--muted)">No transactions.</td></tr>';
+    ${admin && s.status === 'completed' ? `<td><button class="icon-btn" data-void="${s.id}" title="${esc(t('sales.voidTitle'))}">🚫</button><button class="icon-btn" data-refund="${s.id}" title="${esc(t('sales.refundTitle'))}">↩️</button></td>` : '<td></td>'}</tr>`).join('')
+    : `<tr><td colspan="9" style="text-align:center;color:var(--muted)">${esc(t('sales.noTransactions'))}</td></tr>`;
   $$('#sales-body [data-void]').forEach(b => b.addEventListener('click', () => saleAction(b.dataset.void, 'void')));
   $$('#sales-body [data-refund]').forEach(b => b.addEventListener('click', () => saleAction(b.dataset.refund, 'refund')));
 
   $('#shifts-body').innerHTML = shifts.map(s => `<tr>
-    <td>#${s.id}</td><td>${esc(s.cashier_name || '—')}</td><td>${esc(s.register)}</td>
-    <td>${new Date(s.opened_at).toLocaleString()}</td><td>${s.closed_at ? new Date(s.closed_at).toLocaleString() : '—'}</td>
+    <td>#${s.id}</td><td>${esc(s.cashier_name || '—')}</td><td dir="auto">${esc(s.register)}</td>
+    <td>${fmtDate(s.opened_at)}</td><td>${s.closed_at ? fmtDate(s.closed_at) : '—'}</td>
     <td>${money(s.opening_float)}</td><td>${s.expected_cash != null ? money(s.expected_cash) : '—'}</td>
     <td>${s.closing_amount != null ? money(s.closing_amount) : '—'}</td>
     <td>${s.expected_cash != null && s.closing_amount != null ? money(s.closing_amount - s.expected_cash) : '—'}</td>
-    <td><span class="status-badge ${s.status === 'open' ? '' : 'refunded'}">${s.status}</span></td></tr>`).join('')
-    || '<tr><td colspan="10" style="text-align:center;color:var(--muted)">No shifts yet.</td></tr>';
+    <td><span class="status-badge ${s.status === 'open' ? '' : 'refunded'}">${esc(statusLabel(s.status))}</span></td></tr>`).join('')
+    || `<tr><td colspan="10" style="text-align:center;color:var(--muted)">${esc(t('sales.noShifts'))}</td></tr>`;
 
   $('#export-btn').onclick = () => {
-    const rows = [['Sale ID', 'Date', 'Cashier', 'Customer', 'Item', 'Qty', 'Unit price', 'Line total', 'Discount %', 'Tax', 'Total', 'Payment', 'Status']];
+    const rows = [[t('csv.saleId'), t('col.date'), t('col.cashier'), t('col.customer'), t('csv.item'), t('csv.qty'), t('csv.unitPrice'), t('csv.lineTotal'), t('csv.discount'), t('receipt.tax'), t('col.total'), t('col.payment'), t('col.status')]];
     for (const s of sales) for (const i of s.items)
-      rows.push([s.id, s.date, s.cashier_name || '', s.customer_name || '', i.name, i.qty, i.price, i.line_total, s.discount_pct, s.tax, s.total, s.payment, s.status]);
+      rows.push([s.id, s.date, s.cashier_name || '', s.customer_name || '', i.name, i.qty, i.price, i.line_total, s.discount_pct, s.tax, s.total, s.payment, statusLabel(s.status)]);
     const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -831,14 +926,14 @@ async function renderSales() {
 $('#sales-filter').addEventListener('change', renderSales);
 
 async function saleAction(id, action) {
-  if (!confirm(`${action === 'void' ? 'Void' : 'Refund'} sale #${id}? Stock will be restored.`)) return;
+  if (!confirm(t(action === 'void' ? 'sales.voidConfirm' : 'sales.refundConfirm', { id }))) return;
   try {
     const result = await api(`/api/sales/${id}/${action}`, { method: 'POST' });
     products = await api('/api/products');
     scanStockAlerts(products);
     renderGrid(); renderSales();
-    toast(result.status === 'refund_pending' ? '⚠️ Provider refund is pending' : `✅ Sale ${action === 'void' ? 'voided' : 'refunded'}`);
-  } catch (e) { toast('⚠️ ' + e.message); }
+    toast(result.status === 'refund_pending' ? t('sales.refundPending') : t(action === 'void' ? 'sales.voidDone' : 'sales.refundDone'));
+  } catch (e) { toast(t('err.prefix', { message: e.message })); }
 }
 
 // ---------- Settings ----------
@@ -848,13 +943,14 @@ async function renderSettings() {
     $('#s-' + k).value = settings[k];
   }
   $('#s-terminal_register').value = localStorage.getItem(REGISTER_KEY) || settings.register_name || 'Register 1';
-  $('#payment-status').textContent = '💵 Cash-only checkout is enabled. Card payments are disabled.';
+  $('#payment-status').textContent = t('set.checkoutStatus');
+  syncLangControls();
   const users = await api('/api/users');
   $('#users-body').innerHTML = users.map(u => `<tr>
-    <td><strong>${esc(u.username)}</strong></td><td>${esc(u.name)}</td>
-    <td>${u.role === 'admin' ? '👑 Admin' : '🧑‍💼 Cashier'}</td>
-    <td>${u.active ? '<span class="stock-badge">Active</span>' : '<span class="stock-badge out">Disabled</span>'}</td>
-    <td>${u.id !== me.id ? `<button class="icon-btn" data-toggle="${u.id}" title="Enable/disable">${u.active ? '🚫' : '✅'}</button>` : ''}</td></tr>`).join('');
+    <td><strong>${esc(u.username)}</strong></td><td dir="auto">${esc(u.name)}</td>
+    <td>${u.role === 'admin' ? esc(t('role.ownerBadge')) : esc(t('role.cashierBadge'))}</td>
+    <td>${u.active ? `<span class="stock-badge">${esc(t('status.active'))}</span>` : `<span class="stock-badge out">${esc(t('status.disabled'))}</span>`}</td>
+    <td>${u.id !== me.id ? `<button class="icon-btn" data-toggle="${u.id}" title="${esc(t('set.users'))}">${u.active ? '🚫' : '✅'}</button>` : ''}</td></tr>`).join('');
   $$('#users-body [data-toggle]').forEach(b => b.addEventListener('click', async () => {
     const u = users.find(x => x.id === +b.dataset.toggle);
     await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify({ active: !u.active }) });
@@ -869,7 +965,7 @@ $('#store-form').addEventListener('submit', async e => {
   const nextTerminal = $('#s-terminal_register').value.trim();
   const effectiveNext = nextTerminal || $('#s-register_name').value.trim() || 'Register 1';
   if (shift && effectiveNext !== terminalRegister()) {
-    toast('⚠️ Close this register shift before changing its ID');
+    toast(t('set.closeShiftBeforeRegister'));
     return;
   }
   try {
@@ -880,8 +976,8 @@ $('#store-form').addEventListener('submit', async e => {
     showApp();
     renderCart(); renderGrid();
     if (!shift) await ensureShift();
-    toast('✅ Settings saved');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('set.saved'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 $('#force-password-form').addEventListener('submit', async e => {
@@ -901,7 +997,7 @@ $('#force-password-form').addEventListener('submit', async e => {
       await syncQueue();
     }
   } catch (err) {
-    error.textContent = '⚠️ ' + err.message;
+    error.textContent = t('err.prefix', { message: err.message });
     error.hidden = false;
   }
 });
@@ -911,8 +1007,8 @@ $('#password-form').addEventListener('submit', async e => {
   try {
     await api('/api/me/password', { method: 'POST', body: JSON.stringify({ current: $('#pw-current').value, next: $('#pw-next').value }) });
     $('#pw-current').value = $('#pw-next').value = '';
-    toast('✅ Password changed');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('set.pwChanged'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 $('#user-form').addEventListener('submit', async e => {
@@ -921,8 +1017,8 @@ $('#user-form').addEventListener('submit', async e => {
     await api('/api/users', { method: 'POST', body: JSON.stringify({ username: $('#u-username').value, name: $('#u-name').value, password: $('#u-password').value, role: $('#u-role').value }) });
     $('#u-username').value = $('#u-name').value = $('#u-password').value = '';
     renderSettings();
-    toast('✅ User created');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('set.userCreated'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
 });
 
 $('#backup-export').addEventListener('click', async () => {
@@ -931,19 +1027,19 @@ $('#backup-export').addEventListener('click', async () => {
   a.href = URL.createObjectURL(new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' }));
   a.download = `freshmart-backup-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
-  toast('✅ Backup exported');
+  toast(t('set.exported'));
 });
 
 $('#backup-import').addEventListener('change', async e => {
   const file = e.target.files[0];
   if (!file) return;
-  if (!confirm('Importing a backup replaces ALL current products, sales and customers. Continue?')) { e.target.value = ''; return; }
+  if (!confirm(t('set.importConfirm'))) { e.target.value = ''; return; }
   try {
     const data = JSON.parse(await file.text());
     await api('/api/backup/import', { method: 'POST', body: JSON.stringify(data) });
     await refreshAll();
-    toast('✅ Backup imported');
-  } catch (err) { toast('⚠️ ' + err.message); }
+    toast(t('set.imported'));
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
   e.target.value = '';
 });
 
@@ -956,6 +1052,7 @@ async function refreshAll() {
 }
 
 (async () => {
+  syncLangControls();
   // Try to restore an existing session
   try {
     const data = await api('/api/me');

@@ -1,8 +1,8 @@
 'use strict';
 /* Service worker: caches the app shell so the POS UI loads offline.
    Sales made offline are queued in localStorage by app.js and synced on reconnect. */
-const CACHE = 'freshmart-pos-v1';
-const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest'];
+const CACHE = 'freshmart-pos-v2-i18n';
+const SHELL = ['/', '/index.html', '/styles.css', '/i18n.js', '/app.js', '/manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

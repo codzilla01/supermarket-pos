@@ -1,11 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FreshMart — Supermarket POS</title>
+<title>FreshMart — نقاط بيع السوبر ماركت</title>
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="stylesheet" href="styles.css" />
+<script src="i18n.js"></script>
 </head>
 <body>
 
@@ -13,47 +14,49 @@
 <div id="login-screen" class="login-screen">
   <form class="login-card" id="login-form">
     <div class="login-logo">🛒</div>
-    <h1 id="login-store">FreshMart</h1>
-    <p class="muted">Supermarket Point of Sale</p>
-    <label>Username <input id="login-user" autocomplete="username" required /></label>
-    <label>Password <input id="login-pass" type="password" autocomplete="current-password" required /></label>
+    <h1 id="login-store" data-i18n="login.store">فريش مارت</h1>
+    <p class="muted" data-i18n="login.subtitle">نقطة بيع سوبر ماركت</p>
+    <label><span data-i18n="login.username">اسم المستخدم</span> <input id="login-user" autocomplete="username" required /></label>
+    <label><span data-i18n="login.password">كلمة المرور</span> <input id="login-pass" type="password" autocomplete="current-password" required /></label>
     <p class="error" id="login-error" hidden></p>
-    <button class="btn primary big" type="submit">Sign in</button>
-    <p class="muted small">Use the account details provided by your software administrator.</p>
+    <button class="btn primary big" type="submit" data-i18n="login.signin">تسجيل الدخول</button>
+    <p class="muted small" data-i18n="login.hint">استخدم بيانات الحساب التي وفّرها مسؤول النظام.</p>
+    <button type="button" class="btn ghost small lang-switch" data-lang-toggle data-i18n-title="app.langSwitchTitle" data-i18n="app.langSwitch">English</button>
   </form>
 </div>
 
 <!-- ============ APP ============ -->
 <div id="app" hidden>
 <header class="topbar">
-  <div class="brand"><span class="brand-icon">🛒</span><div><strong id="brand-name">FreshMart</strong><small>Supermarket POS</small></div></div>
+  <div class="brand"><span class="brand-icon">🛒</span><div><strong id="brand-name">FreshMart</strong><small data-i18n="app.subtitle">نقاط بيع السوبر ماركت</small></div></div>
   <nav class="tabs">
-    <button class="tab active" data-view="pos">🧾 Point of Sale</button>
-    <button class="tab" data-view="inventory">📦 Inventory</button>
-    <button class="tab" data-view="sales">📊 Sales</button>
-    <button class="tab" data-view="customers">👥 Customers</button>
-    <button class="tab admin-only" data-view="settings">⚙️ Settings</button>
-    <button class="tab subscription-tab" data-view="subscription">💳 Subscription</button>
-    <button class="tab developer-only" data-view="developer">🛡️ Developer Console</button>
+    <button class="tab active" data-view="pos" data-i18n="nav.pos">🧾 نقطة البيع</button>
+    <button class="tab" data-view="inventory" data-i18n="nav.inventory">📦 المخزون</button>
+    <button class="tab" data-view="sales" data-i18n="nav.sales">📊 المبيعات</button>
+    <button class="tab" data-view="customers" data-i18n="nav.customers">👥 العملاء</button>
+    <button class="tab admin-only" data-view="settings" data-i18n="nav.settings">⚙️ الإعدادات</button>
+    <button class="tab subscription-tab" data-view="subscription" data-i18n="nav.subscription">💳 الاشتراك</button>
+    <button class="tab developer-only" data-view="developer" data-i18n="nav.developer">🛡️ لوحة المطوّر</button>
   </nav>
   <div class="top-actions">
-    <span class="badge" id="shift-badge" title="Current shift">No shift</span>
+    <span class="badge" id="shift-badge" data-i18n-title="top.noShift" data-i18n="top.noShiftBadge">⚪ لا توجد وردية</span>
     <div class="notification-center">
-      <button type="button" class="notification-bell" id="notifications-btn" aria-label="Notifications" aria-expanded="false">🔔<span id="notifications-count" hidden>0</span></button>
-      <section class="notification-panel" id="notifications-panel" hidden aria-label="Notifications">
-        <div class="notification-panel-head"><strong>Notifications</strong><button type="button" class="icon-btn" id="notification-close" aria-label="Close">×</button></div>
+      <button type="button" class="notification-bell" id="notifications-btn" data-i18n-aria-label="notif.aria" aria-expanded="false">🔔<span id="notifications-count" hidden>0</span></button>
+      <section class="notification-panel" id="notifications-panel" hidden data-i18n-aria-label="notif.aria">
+        <div class="notification-panel-head"><strong data-i18n="notif.title">الإشعارات</strong><button type="button" class="icon-btn" id="notification-close" data-i18n-aria-label="notif.close">×</button></div>
         <div class="notification-controls">
-          <button type="button" class="btn ghost small" id="notification-sound">🔊 Sound on</button>
-          <button type="button" class="btn ghost small" id="notification-permission">Enable browser alerts</button>
-          <button type="button" class="btn ghost small" id="notification-read-all">Mark read</button>
-          <button type="button" class="btn ghost small" id="notification-clear">Clear</button>
+          <button type="button" class="btn ghost small" id="notification-sound">🔊 الصوت مفعّل</button>
+          <button type="button" class="btn ghost small" id="notification-permission">تفعيل تنبيهات المتصفح</button>
+          <button type="button" class="btn ghost small" id="notification-read-all" data-i18n="notif.markRead">تحديد كمقروء</button>
+          <button type="button" class="btn ghost small" id="notification-clear" data-i18n="notif.clear">مسح</button>
         </div>
         <div class="notification-list" id="notification-list"></div>
       </section>
     </div>
-    <span class="badge" id="queue-badge" hidden title="Offline sales waiting to sync">📶 0 queued</span>
+    <span class="badge" id="queue-badge" hidden data-i18n-title="queue.syncTitle">📶 0 في الانتظار</span>
     <span class="user-chip" id="user-chip"></span>
-    <button class="btn ghost small" id="logout-btn">Logout</button>
+    <button class="btn ghost small" id="logout-btn" data-i18n="top.logout">خروج</button>
+    <button class="btn ghost small lang-switch" type="button" data-lang-toggle data-i18n-title="app.langSwitchTitle" data-i18n="app.langSwitch">English</button>
   </div>
   <div class="clock" id="clock">--:--</div>
 </header>
@@ -62,35 +65,34 @@
 <main id="view-pos" class="view active">
   <section class="catalog">
     <div class="catalog-tools">
-      <div class="search-wrap"><span>🔍</span><input id="search" type="text" placeholder="Search products…" autocomplete="off" /></div>
-      <input id="barcode" type="text" placeholder="⌨ Barcode + Enter" autocomplete="off" />
+      <div class="search-wrap"><span>🔍</span><input id="search" type="text" data-i18n-placeholder="pos.search" placeholder="ابحث عن منتج…" autocomplete="off" /></div>
+      <input id="barcode" type="text" data-i18n-placeholder="pos.barcode" placeholder="⌨ امسح الباركود + Enter" autocomplete="off" />
     </div>
     <div class="categories" id="categories"></div>
     <div class="grid" id="grid"></div>
-    <p class="empty" id="grid-empty" hidden>No products match your search.</p>
+    <p class="empty" id="grid-empty" hidden data-i18n="pos.noMatch">لا توجد منتجات مطابقة لبحثك.</p>
   </section>
 
   <aside class="cart-panel">
-    <div class="cart-head"><h2>🧺 Current Sale</h2><button class="btn ghost small" id="clear-cart">Clear</button></div>
+    <div class="cart-head"><h2 data-i18n="cart.title">🧺 الفاتورة الحالية</h2><button class="btn ghost small" id="clear-cart" data-i18n="cart.clear">تفريغ</button></div>
     <div class="customer-row">
-      <select id="customer-select"><option value="">👤 Walk-in customer</option></select>
-      <button class="btn ghost small" id="new-customer-btn" title="New customer">＋</button>
+      <select id="customer-select"><option value="" data-i18n="cart.walkIn">👤 عميل نقدي</option></select>
+      <button class="btn ghost small" id="new-customer-btn" data-i18n-title="cart.newCustomer">＋</button>
     </div>
     <div class="points-row" id="points-row" hidden>
       <span id="points-info"></span>
-      <label><input type="checkbox" id="redeem-points" /> Redeem points</label>
+      <label><input type="checkbox" id="redeem-points" /> <span data-i18n="cart.redeem">استبدال النقاط</span></label>
     </div>
-    <div class="cart-items" id="cart-items">
-      <p class="cart-empty" id="cart-empty">Cart is empty.<br/>Click a product or scan a barcode.</p>
-    </div>
+    <p class="cart-empty" id="cart-empty" data-i18n-html="cart.emptyHtml">الفاتورة فارغة.<br/>اضغط على منتج أو امسح الباركود.</p>
+    <div class="cart-items" id="cart-items"></div>
     <div class="cart-summary">
-      <label class="discount-row">Discount % <input id="discount" type="number" min="0" max="100" step="1" value="0" /></label>
-      <div class="row"><span>Subtotal</span><span id="sum-subtotal">$0.00</span></div>
-      <div class="row"><span>Discount</span><span id="sum-discount">−$0.00</span></div>
-      <div class="row"><span>Points discount</span><span id="sum-points">−$0.00</span></div>
-      <div class="row"><span>Tax</span><span id="sum-tax">$0.00</span></div>
-      <div class="row total"><span>Total</span><span id="sum-total">$0.00</span></div>
-      <button class="btn primary big" id="checkout-btn" disabled>💵 Cash checkout</button>
+      <label class="discount-row"><span data-i18n="cart.discountPct">الخصم %</span> <input id="discount" type="number" min="0" max="100" step="1" value="0" /></label>
+      <div class="row"><span data-i18n="cart.subtotal">المجموع</span><span id="sum-subtotal">ج.م0.00</span></div>
+      <div class="row"><span data-i18n="cart.discount">الخصم</span><span id="sum-discount">−ج.م0.00</span></div>
+      <div class="row"><span data-i18n="cart.points">خصم النقاط</span><span id="sum-points">−ج.م0.00</span></div>
+      <div class="row"><span data-i18n="cart.tax">الضريبة</span><span id="sum-tax">ج.م0.00</span></div>
+      <div class="row total"><span data-i18n="cart.total">الإجمالي</span><span id="sum-total">ج.م0.00</span></div>
+      <button class="btn primary big" id="checkout-btn" disabled data-i18n="cart.cashCheckout">💵 تحصيل نقدي</button>
     </div>
   </aside>
 </main>
@@ -98,41 +100,46 @@
 <!-- ============ INVENTORY VIEW ============ -->
 <main id="view-inventory" class="view">
   <div class="page-head">
-    <h2>📦 Inventory <span class="muted" id="inv-count"></span></h2>
+    <h2><span data-i18n="inv.title">📦 المخزون</span> <span class="muted" id="inv-count"></span></h2>
     <div class="head-actions">
-      <button class="btn ghost admin-only" id="restore-defaults-btn">↻ Add missing starter items</button>
-      <button class="btn primary admin-only" id="add-product-btn">＋ Add product</button>
+      <button class="btn ghost admin-only" id="restore-defaults-btn" data-i18n="inv.starter">↻ إضافة المنتجات الأساسية الناقصة</button>
+      <button class="btn primary admin-only" id="add-product-btn" data-i18n="inv.add">＋ إضافة منتج</button>
     </div>
   </div>
   <div class="table-wrap"><table>
-    <thead><tr><th></th><th>Product</th><th>Category</th><th>Barcode</th><th>Price</th><th>Unit</th><th>Stock</th><th class="admin-only"></th></tr></thead>
+    <thead><tr><th></th><th data-i18n="col.product">المنتج</th><th data-i18n="col.category">القسم</th><th data-i18n="col.barcode">الباركود</th><th data-i18n="col.price">السعر</th><th data-i18n="col.unit">الوحدة</th><th data-i18n="col.stock">المخزون</th><th class="admin-only"></th></tr></thead>
     <tbody id="inv-body"></tbody>
   </table></div>
 </main>
 
 <!-- ============ SALES VIEW ============ -->
 <main id="view-sales" class="view">
-  <div class="page-head"><h2>📊 Sales &amp; Reports</h2>
+  <div class="page-head"><h2 data-i18n="sales.title">📊 المبيعات والتقارير</h2>
     <div class="head-actions">
-      <select id="sales-filter"><option value="all">All statuses</option><option value="completed">Completed</option><option value="voided">Voided</option><option value="refunded">Refunded</option></select>
-      <button class="btn ghost" id="export-btn">⬇ Export CSV</button>
+      <select id="sales-filter">
+        <option value="all" data-i18n="sales.filterAll">كل الحالات</option>
+        <option value="completed" data-i18n="sales.filterCompleted">مكتملة</option>
+        <option value="voided" data-i18n="sales.filterVoided">ملغاة</option>
+        <option value="refunded" data-i18n="sales.filterRefunded">مسترجعة</option>
+      </select>
+      <button class="btn ghost" id="export-btn" data-i18n="sales.export">⬇ تصدير CSV</button>
     </div>
   </div>
   <div class="stats" id="stats"></div>
   <div class="two-col">
-    <section class="card"><h3>🏆 Top products</h3><div id="top-products"></div></section>
-    <section class="card"><h3>👤 Sales by cashier</h3><div id="by-cashier"></div></section>
+    <section class="card"><h3 data-i18n="sales.topProducts">🏆 الأكثر مبيعًا</h3><div id="top-products"></div></section>
+    <section class="card"><h3 data-i18n="sales.byCashier">👤 المبيعات حسب الكاشير</h3><div id="by-cashier"></div></section>
   </div>
-  <section class="card"><h3>⚠️ Low stock</h3><div id="low-stock"></div></section>
-  <section class="card"><h3>🧾 Transactions</h3>
+  <section class="card"><h3 data-i18n="sales.lowStock">⚠️ مخزون منخفض</h3><div id="low-stock"></div></section>
+  <section class="card"><h3 data-i18n="sales.transactions">🧾 الحركات</h3>
     <div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>Date</th><th>Cashier</th><th>Customer</th><th>Items</th><th>Payment</th><th>Status</th><th>Total</th><th class="admin-only"></th></tr></thead>
+      <thead><tr><th>#</th><th data-i18n="col.date">التاريخ</th><th data-i18n="col.cashier">الكاشير</th><th data-i18n="col.customer">العميل</th><th data-i18n="col.items">الأصناف</th><th data-i18n="col.payment">الدفع</th><th data-i18n="col.status">الحالة</th><th data-i18n="col.total">الإجمالي</th><th class="admin-only"></th></tr></thead>
       <tbody id="sales-body"></tbody>
     </table></div>
   </section>
-  <section class="card"><h3>🕐 Shift history</h3>
+  <section class="card"><h3 data-i18n="sales.shiftHistory">🕐 سجل الورديات</h3>
     <div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>Cashier</th><th>Register</th><th>Opened</th><th>Closed</th><th>Float</th><th>Expected</th><th>Counted</th><th>Variance</th><th>Status</th></tr></thead>
+      <thead><tr><th>#</th><th data-i18n="col.cashier">الكاشير</th><th data-i18n="col.register">الكاشير/الجهاز</th><th data-i18n="col.opened">الفتح</th><th data-i18n="col.closed">الإغلاق</th><th data-i18n="col.float">العهدة</th><th data-i18n="col.expected">المتوقع</th><th data-i18n="col.counted">المُحصى</th><th data-i18n="col.variance">الفرق</th><th data-i18n="col.status">الحالة</th></tr></thead>
       <tbody id="shifts-body"></tbody>
     </table></div>
   </section>
@@ -140,62 +147,68 @@
 
 <!-- ============ CUSTOMERS VIEW ============ -->
 <main id="view-customers" class="view">
-  <div class="page-head"><h2>👥 Customers <span class="muted" id="cust-count"></span></h2>
-    <button class="btn primary" id="add-customer-btn">＋ Add customer</button></div>
+  <div class="page-head"><h2><span data-i18n="cust.title">👥 العملاء</span> <span class="muted" id="cust-count"></span></h2>
+    <button class="btn primary" id="add-customer-btn" data-i18n="cust.add">＋ إضافة عميل</button></div>
   <div class="table-wrap"><table>
-    <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Points</th><th>Member since</th><th class="admin-only"></th></tr></thead>
+    <thead><tr><th data-i18n="col.name">الاسم</th><th data-i18n="col.phone">الهاتف</th><th data-i18n="col.email">البريد</th><th data-i18n="col.points">النقاط</th><th data-i18n="col.memberSince">عضو منذ</th><th class="admin-only"></th></tr></thead>
     <tbody id="cust-body"></tbody>
   </table></div>
 </main>
 
 <!-- ============ SETTINGS VIEW ============ -->
 <main id="view-settings" class="view">
-  <div class="page-head"><h2>⚙️ Settings</h2></div>
+  <div class="page-head"><h2 data-i18n="set.title">⚙️ الإعدادات</h2></div>
   <div class="two-col">
-    <section class="card"><h3>🏪 Store</h3>
+    <section class="card"><h3 data-i18n="set.store">🏪 المتجر</h3>
       <form id="store-form">
-        <label>Store name <input id="s-store_name" /></label>
-        <label>Store address <input id="s-store_address" /></label>
-        <label>Store phone <input id="s-store_phone" /></label>
-        <label>VAT / tax registration number <input id="s-vat_number" /></label>
-        <label>Receipt footer <input id="s-receipt_footer" /></label>
-        <label>Default tax rate (0–1, e.g. 0.09) <input id="s-tax_rate" type="number" step="0.01" min="0" max="1" /></label>
-        <label>Currency symbol <input id="s-currency" maxlength="3" /></label>
-        <label>Currency code (USD, EUR, GBP, EGP) <input id="s-currency_code" maxlength="3" /></label>
-        <label>Low-stock threshold <input id="s-low_stock_threshold" type="number" min="0" /></label>
-        <label>Default register name <input id="s-register_name" /></label>
-        <label>This terminal/register ID <input id="s-terminal_register" placeholder="e.g. Register 1" /></label>
-        <label>Points per store-currency unit spent <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
-        <label>Point value in store currency <input id="s-points_value" type="number" step="0.001" min="0" /></label>
-        <button class="btn primary" type="submit">Save settings</button>
+        <label><span data-i18n="set.storeName">اسم المتجر</span> <input id="s-store_name" /></label>
+        <label><span data-i18n="set.storeAddress">عنوان المتجر</span> <input id="s-store_address" /></label>
+        <label><span data-i18n="set.storePhone">هاتف المتجر</span> <input id="s-store_phone" /></label>
+        <label><span data-i18n="set.vat">الرقم الضريبي / رقم التسجيل</span> <input id="s-vat_number" /></label>
+        <label><span data-i18n="set.footer">تذييل الإيصال</span> <input id="s-receipt_footer" /></label>
+        <label><span data-i18n="set.taxRate">نسبة الضريبة الافتراضية (0–1، مثال 0.14)</span> <input id="s-tax_rate" type="number" step="0.01" min="0" max="1" /></label>
+        <label><span data-i18n="set.currencySymbol">رمز العملة</span> <input id="s-currency" maxlength="3" /></label>
+        <label><span data-i18n="set.currencyCode">كود العملة (USD, EUR, GBP, EGP)</span> <input id="s-currency_code" maxlength="3" /></label>
+        <label><span data-i18n="set.lowStock">حد المخزون المنخفض</span> <input id="s-low_stock_threshold" type="number" min="0" /></label>
+        <label><span data-i18n="set.registerName">اسم الكاشير/الجهاز الافتراضي</span> <input id="s-register_name" /></label>
+        <label><span data-i18n="set.terminal">معرّف هذا الجهاز/الكاشير</span> <input id="s-terminal_register" data-i18n-placeholder="set.terminalPlaceholder" placeholder="مثال: كاشير 1" /></label>
+        <label><span data-i18n="set.pointsPer">نقاط لكل وحدة عملة مصروفة</span> <input id="s-points_per_dollar" type="number" step="0.1" min="0" /></label>
+        <label><span data-i18n="set.pointValue">قيمة النقطة بعملة المتجر</span> <input id="s-points_value" type="number" step="0.001" min="0" /></label>
+        <button class="btn primary" type="submit" data-i18n="set.save">حفظ الإعدادات</button>
       </form>
+      <h3 style="margin-top:24px" data-i18n="set.language">🌐 اللغة</h3>
+      <p class="muted small" data-i18n="set.languageHint">اللغة تُحفظ على هذا الجهاز فقط، وبيانات المتجر واحدة لكل الأجهزة.</p>
+      <div class="lang-choice">
+        <label class="inline-check"><input type="radio" name="lang-choice" value="ar" /> <span data-i18n="set.arabic">العربية (RTL)</span></label>
+        <label class="inline-check"><input type="radio" name="lang-choice" value="en" /> <span data-i18n="set.english">English (LTR)</span></label>
+      </div>
     </section>
-    <section class="card"><h3>🔐 My password</h3>
+    <section class="card"><h3 data-i18n="set.password">🔐 كلمة مروري</h3>
       <form id="password-form">
-        <label>Current password <input id="pw-current" type="password" required /></label>
-        <label>New password (12+ characters) <input id="pw-next" type="password" required minlength="12" /></label>
-        <button class="btn primary" type="submit">Change password</button>
+        <label><span data-i18n="set.currentPw">كلمة المرور الحالية</span> <input id="pw-current" type="password" required /></label>
+        <label><span data-i18n="set.newPw">كلمة مرور جديدة (12 حرفًا أو أكثر)</span> <input id="pw-next" type="password" required minlength="12" /></label>
+        <button class="btn primary" type="submit" data-i18n="set.changePw">تغيير كلمة المرور</button>
       </form>
-      <h3 style="margin-top:24px">💵 Checkout</h3>
-      <p id="payment-status" class="muted">Cash-only checkout is enabled.</p>
-      <h3 style="margin-top:24px">💾 Backup</h3>
+      <h3 style="margin-top:24px" data-i18n="set.checkout">💵 التحصيل</h3>
+      <p id="payment-status" class="muted" data-i18n="set.checkoutStatus">💵 التحصيل النقدي مفعّل. الدفع بالبطاقة معطّل.</p>
+      <h3 style="margin-top:24px" data-i18n="set.backup">💾 النسخ الاحتياطي</h3>
       <div class="head-actions">
-        <button class="btn ghost" id="backup-export">⬇ Export backup (JSON)</button>
-        <label class="btn ghost file-label">⬆ Import backup<input type="file" id="backup-import" accept=".json" hidden /></label>
+        <button class="btn ghost" id="backup-export" data-i18n="set.exportBackup">⬇ تصدير نسخة احتياطية (JSON)</button>
+        <label class="btn ghost file-label"><span data-i18n="set.importBackup">⬆ استيراد نسخة احتياطية</span><input type="file" id="backup-import" accept=".json" hidden /></label>
       </div>
     </section>
   </div>
-  <section class="card"><h3>👤 Users &amp; roles</h3>
+  <section class="card"><h3 data-i18n="set.users">👤 المستخدمون والأدوار</h3>
     <div class="table-wrap"><table>
-      <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th data-i18n="col.username">اسم المستخدم</th><th data-i18n="col.name">الاسم</th><th data-i18n="col.role">الدور</th><th data-i18n="col.status">الحالة</th><th></th></tr></thead>
       <tbody id="users-body"></tbody>
     </table></div>
     <form id="user-form" class="inline-form">
-      <input id="u-username" placeholder="Username" required />
-      <input id="u-name" placeholder="Display name" />
-      <input id="u-password" type="password" placeholder="Temporary password (min 12)" minlength="12" required />
-      <select id="u-role"><option value="cashier">Cashier</option><option value="admin">Admin</option></select>
-      <button class="btn primary" type="submit">＋ Add user</button>
+      <input id="u-username" data-i18n-placeholder="set.username" placeholder="اسم المستخدم" required />
+      <input id="u-name" data-i18n-placeholder="set.displayName" placeholder="الاسم المعروض" />
+      <input id="u-password" type="password" data-i18n-placeholder="set.tempPw" placeholder="كلمة مرور مؤقتة (12 حرفًا على الأقل)" minlength="12" required />
+      <select id="u-role"><option value="cashier" data-i18n="role.cashier">كاشير</option><option value="admin" data-i18n="role.admin">مدير</option></select>
+      <button class="btn primary" type="submit" data-i18n="set.addUser">＋ إضافة مستخدم</button>
     </form>
   </section>
 </main>
@@ -204,59 +217,59 @@
 <main id="view-subscription" class="view">
   <section class="subscription-hero card">
     <div class="subscription-icon">◈</div>
-    <p class="eyebrow">SERVICE PLAN</p>
-    <h2 id="subscription-title">Subscription status</h2>
-    <p id="subscription-summary" class="muted">Checking your license…</p>
+    <p class="eyebrow" data-i18n="sub.eyebrow">خطة الخدمة</p>
+    <h2 id="subscription-title" data-i18n="sub.statusTitle">حالة الاشتراك</h2>
+    <p id="subscription-summary" class="muted" data-i18n="sub.checking">جارٍ التحقق من الترخيص…</p>
     <div class="subscription-facts" id="subscription-facts"></div>
-    <p class="subscription-note">Payments are recorded manually by the software provider. To renew or restore access, contact your provider and quote your store name and subscription status.</p>
+    <p class="subscription-note" data-i18n="sub.note">يُسجّل مزوّد البرنامج المدفوعات يدويًا. لتجديد الاشتراك أو استعادة الوصول، تواصل مع المزوّد واذكر اسم متجرك وحالة الاشتراك.</p>
   </section>
 </main>
 
 <!-- ============ DEVELOPER CONSOLE ============ -->
 <main id="view-developer" class="view">
   <div class="page-head">
-    <div><p class="eyebrow">PLATFORM OPERATIONS</p><h2>🛡️ Developer control center</h2><p class="muted">Subscription lifecycle, activation tracking and local service health.</p></div>
-    <button class="btn ghost" id="dev-refresh">↻ Refresh</button>
+    <div><p class="eyebrow" data-i18n="dev.eyebrow">عمليات المنصة</p><h2 data-i18n="dev.title">🛡️ مركز تحكم المطوّر</h2><p class="muted" data-i18n="dev.subtitle">دورة حياة الاشتراك، تتبّع التفعيل، وصحة الخدمة المحلية.</p></div>
+    <button class="btn ghost" id="dev-refresh" data-i18n="dev.refresh">↻ تحديث</button>
   </div>
   <div class="dev-metrics" id="dev-metrics"></div>
   <div class="dev-grid">
     <section class="card dev-license-card">
-      <div class="section-kicker">CURRENT INSTALLATION</div>
-      <div class="dev-license-head"><div><h3 id="dev-store-name">Store subscription</h3><span id="dev-license-status" class="license-pill">Loading</span></div><div class="license-glyph">◈</div></div>
+      <div class="section-kicker" data-i18n="dev.currentInstallation">التثبيت الحالي</div>
+      <div class="dev-license-head"><div><h3 id="dev-store-name" data-i18n="dev.storeSubscription">اشتراك المتجر</h3><span id="dev-license-status" class="license-pill" data-i18n="dev.loading">جارٍ التحميل</span></div><div class="license-glyph">◈</div></div>
       <div class="license-details" id="dev-license-details"></div>
       <form id="dev-renew-form" class="dev-action-form">
-        <h4>Record payment &amp; activate annual plan</h4>
-        <label>Payment / receipt reference<input id="dev-payment-ref" required maxlength="120" placeholder="Bank transfer ref, receipt #…" /></label>
-        <button class="btn primary" type="submit">Activate / extend by 1 year</button>
+        <h4 data-i18n="dev.recordPayment">تسجيل الدفع وتفعيل الخطة السنوية</h4>
+        <label><span data-i18n="dev.paymentRef">مرجع الدفع / الإيصال</span><input id="dev-payment-ref" required maxlength="120" data-i18n-placeholder="dev.paymentRefPlaceholder" placeholder="رقم التحويل البنكي، رقم الإيصال…" /></label>
+        <button class="btn primary" type="submit" data-i18n="dev.activate">تفعيل / تمديد سنة واحدة</button>
       </form>
       <div class="dev-actions">
-        <button class="btn danger" id="dev-suspend">Suspend service</button>
-        <button class="btn ghost" id="dev-restore">Restore before expiry</button>
+        <button class="btn danger" id="dev-suspend" data-i18n="dev.suspend">إيقاف الخدمة</button>
+        <button class="btn ghost" id="dev-restore" data-i18n="dev.restore">استعادة قبل الانتهاء</button>
       </div>
     </section>
     <section class="card dev-timeline-card">
-      <div class="dev-section-head"><div><div class="section-kicker">AUDIT TRAIL</div><h3>Activation activity</h3></div><span class="muted small">Latest 100 events</span></div>
+      <div class="dev-section-head"><div><div class="section-kicker" data-i18n="dev.audit">سجل التدقيق</div><h3 data-i18n="dev.activity">نشاط التفعيل</h3></div><span class="muted small" data-i18n="dev.latest">آخر 100 حدث</span></div>
       <div id="dev-events" class="dev-events"></div>
     </section>
   </div>
-  <p class="dev-scope-note">This console administers the subscription for this installation and its local SQLite database. It does not remotely aggregate or control other independent installations.</p>
+  <p class="dev-scope-note" data-i18n="dev.scope">تدير هذه اللوحة اشتراك هذا التثبيت وقاعدة بيانات SQLite المحلية فقط، ولا تجمع أو تتحكم عن بُعد في تثبيتات أخرى مستقلة.</p>
 </main>
 </div>
 
 <!-- ============ SHIFT MODAL ============ -->
 <div class="modal-backdrop" id="shift-modal" hidden>
   <div class="modal">
-    <h2 id="shift-modal-title">Open shift</h2>
+    <h2 id="shift-modal-title">فتح وردية</h2>
     <div id="shift-open-fields">
-      <label>Opening cash float (<span class="currency-unit">store currency</span>) <input id="opening-float" type="number" min="0" step="0.01" value="100" /></label>
+      <label><span id="shift-float-label">العهدة النقدية الافتتاحية</span> <input id="opening-float" type="number" min="0" step="0.01" value="100" /></label>
     </div>
     <div id="shift-close-fields" hidden>
-      <div class="row"><span>Expected cash</span><span id="expected-cash">$0.00</span></div>
-      <label>Counted cash (<span class="currency-unit">store currency</span>) <input id="closing-amount" type="number" min="0" step="0.01" /></label>
-      <div class="row"><span>Variance</span><span id="variance">$0.00</span></div>
+      <div class="row"><span data-i18n="shift.expected">النقد المتوقع</span><span id="expected-cash">ج.م0.00</span></div>
+      <label><span id="shift-counted-label">النقد المُحصى</span> <input id="closing-amount" type="number" min="0" step="0.01" /></label>
+      <div class="row"><span data-i18n="shift.variance">الفرق</span><span id="variance">ج.م0.00</span></div>
     </div>
     <div class="modal-actions">
-      <button class="btn primary" id="shift-confirm">Open shift</button>
+      <button class="btn primary" id="shift-confirm">فتح الوردية</button>
     </div>
   </div>
 </div>
@@ -264,31 +277,31 @@
 <!-- ============ CHECKOUT MODAL ============ -->
 <div class="modal-backdrop" id="checkout-modal" hidden>
   <div class="modal">
-    <h2>💳 Checkout</h2>
+    <h2 data-i18n="checkout.title">💳 التحصيل</h2>
     <div class="pay-toggle">
-      <button class="pay-btn active" data-pay="cash" type="button">💵 Cash only</button>
+      <button class="pay-btn active" data-pay="cash" type="button" data-i18n="checkout.cashOnly">💵 نقدي فقط</button>
     </div>
-    <div class="row total"><span>Amount due</span><span id="due">$0.00</span></div>
+    <div class="row total"><span data-i18n="checkout.due">المبلغ المستحق</span><span id="due">ج.م0.00</span></div>
     <div id="cash-fields">
-      <label>Tendered <input id="tendered" type="number" min="0" step="0.01" placeholder="0.00" /></label>
-      <div class="quick"><button data-amt="exact">Exact</button><button data-amt="50">50</button><button data-amt="100">100</button><button data-amt="200">200</button><button data-amt="500">500</button></div>
-      <div class="row"><span>Change</span><span id="change">$0.00</span></div>
+      <label><span data-i18n="checkout.tendered">المدفوع</span> <input id="tendered" type="number" min="0" step="0.01" placeholder="0.00" /></label>
+      <div class="quick"><button data-amt="exact" data-i18n="checkout.exact">بالمبلغ</button><button data-amt="50">50</button><button data-amt="100">100</button><button data-amt="200">200</button><button data-amt="500">500</button></div>
+      <div class="row"><span data-i18n="checkout.change">الباقي</span><span id="change">ج.م0.00</span></div>
     </div>
     <p class="error" id="checkout-error" hidden></p>
     <div class="modal-actions">
-      <button class="btn ghost" data-close>Cancel</button>
-      <button class="btn primary" id="complete-sale">Complete sale</button>
+      <button class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button class="btn primary" id="complete-sale" data-i18n="checkout.complete">إتمام البيع</button>
     </div>
   </div>
 </div>
 
 <!-- ============ RECEIPT MODAL ============ -->
 <div class="modal-backdrop" id="receipt-modal" hidden>
-  <div class="modal receipt">
+  <div class="modal receipt" dir="rtl">
     <div id="receipt-body"></div>
     <div class="modal-actions no-print">
-      <button class="btn ghost" id="print-receipt">🖨 Print</button>
-      <button class="btn primary" data-close>New sale</button>
+      <button class="btn ghost" id="print-receipt" data-i18n="receipt.print">🖨 طباعة</button>
+      <button class="btn primary" data-close data-i18n="receipt.newSale">فاتورة جديدة</button>
     </div>
   </div>
 </div>
@@ -296,23 +309,23 @@
 <!-- ============ PRODUCT MODAL ============ -->
 <div class="modal-backdrop" id="product-modal" hidden>
   <form class="modal" id="product-form">
-    <h2 id="product-form-title">Add product</h2>
+    <h2 id="product-form-title">إضافة منتج</h2>
     <input type="hidden" id="f-id" />
-    <label>Name <input id="f-name" required /></label>
-    <label>Category <input id="f-category" list="cat-list" required /><datalist id="cat-list"></datalist></label>
+    <label><span data-i18n="prod.name">الاسم</span> <input id="f-name" required /></label>
+    <label><span data-i18n="prod.category">القسم</span> <input id="f-category" list="cat-list" required /><datalist id="cat-list"></datalist></label>
     <div class="form-row">
-      <label>Price <input id="f-price" type="number" min="0" step="0.01" required /></label>
-      <label>Stock <input id="f-stock" type="number" min="0" step="1" required /></label>
+      <label><span data-i18n="prod.price">السعر</span> <input id="f-price" type="number" min="0" step="0.01" required /></label>
+      <label><span data-i18n="prod.stock">المخزون</span> <input id="f-stock" type="number" min="0" step="1" required /></label>
     </div>
     <div class="form-row">
-      <label>Unit <input id="f-unit" value="each" /></label>
-      <label>Emoji <input id="f-emoji" value="📦" maxlength="4" /></label>
+      <label><span data-i18n="prod.unit">الوحدة</span> <input id="f-unit" value="each" /></label>
+      <label><span data-i18n="prod.emoji">الرمز</span> <input id="f-emoji" value="📦" maxlength="4" /></label>
     </div>
-    <label>Barcode <input id="f-barcode" placeholder="auto-generated if empty" /></label>
-    <label>Product tax rate (0–1; blank uses store default) <input id="f-tax-rate" type="number" min="0" max="1" step="0.01" /></label>
+    <label><span data-i18n="prod.barcode">الباركود</span> <input id="f-barcode" data-i18n-placeholder="prod.barcodePlaceholder" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا" /></label>
+    <label><span data-i18n="prod.taxRate">ضريبة المنتج (0–1؛ فارغ = الافتراضي)</span> <input id="f-tax-rate" type="number" min="0" max="1" step="0.01" /></label>
     <div class="modal-actions">
-      <button type="button" class="btn ghost" data-close>Cancel</button>
-      <button type="submit" class="btn primary">Save product</button>
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button type="submit" class="btn primary" data-i18n="prod.save">حفظ المنتج</button>
     </div>
   </form>
 </div>
@@ -320,27 +333,27 @@
 <!-- ============ CUSTOMER MODAL ============ -->
 <div class="modal-backdrop" id="customer-modal" hidden>
   <form class="modal" id="customer-form">
-    <h2 id="customer-form-title">Add customer</h2>
+    <h2 id="customer-form-title">إضافة عميل</h2>
     <input type="hidden" id="c-id" />
-    <label>Name <input id="c-name" required /></label>
-    <label>Phone <input id="c-phone" placeholder="e.g. +31 6 1234 5678" /></label>
-    <label>Email <input id="c-email" type="email" /></label>
-    <label id="c-points-wrap" hidden>Points <input id="c-points" type="number" min="0" /></label>
+    <label><span data-i18n="custMod.name">الاسم</span> <input id="c-name" required /></label>
+    <label><span data-i18n="custMod.phone">الهاتف</span> <input id="c-phone" data-i18n-placeholder="cust.phonePlaceholder" placeholder="مثال: +20 10 1234 5678" /></label>
+    <label><span data-i18n="custMod.email">البريد الإلكتروني</span> <input id="c-email" type="email" /></label>
+    <label id="c-points-wrap" hidden><span data-i18n="custMod.points">النقاط</span> <input id="c-points" type="number" min="0" /></label>
     <div class="modal-actions">
-      <button type="button" class="btn ghost" data-close>Cancel</button>
-      <button type="submit" class="btn primary">Save customer</button>
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button type="submit" class="btn primary" data-i18n="custMod.save">حفظ العميل</button>
     </div>
   </form>
 </div>
 
 <div class="modal-backdrop" id="force-password-modal" hidden>
   <form class="modal" id="force-password-form">
-    <h2>🔐 Change your password</h2>
-    <p class="muted">A new password is required before using the POS. Use at least 12 characters.</p>
-    <label>Current password <input id="force-pw-current" type="password" required autocomplete="current-password" /></label>
-    <label>New password <input id="force-pw-next" type="password" required minlength="12" autocomplete="new-password" /></label>
+    <h2 data-i18n="force.title">🔐 تغيير كلمة المرور</h2>
+    <p class="muted" data-i18n="force.text">مطلوب كلمة مرور جديدة قبل استخدام النظام، بطول 12 حرفًا على الأقل.</p>
+    <label><span data-i18n="force.current">كلمة المرور الحالية</span> <input id="force-pw-current" type="password" required autocomplete="current-password" /></label>
+    <label><span data-i18n="force.new">كلمة المرور الجديدة</span> <input id="force-pw-next" type="password" required minlength="12" autocomplete="new-password" /></label>
     <p class="error" id="force-pw-error" hidden></p>
-    <div class="modal-actions"><button class="btn primary" type="submit">Change password and continue</button></div>
+    <div class="modal-actions"><button class="btn primary" type="submit" data-i18n="force.submit">تغيير كلمة المرور والمتابعة</button></div>
   </form>
 </div>
 

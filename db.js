@@ -49,7 +49,7 @@ const DEFAULT_SETTINGS = {
   store_address: '',
   store_phone: '',
   vat_number: '',
-  receipt_footer: 'Thank you for shopping!',
+  receipt_footer: 'شكرًا لتسوقكم!',
   tax_rate: '0.08',
   currency: 'ج.م',
   currency_code: 'EGP',

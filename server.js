@@ -95,7 +95,7 @@ let lastActivityWrite = 0;
 function requireAuth(req, res) {
   const token = auth.parseCookies(req).pos_session;
   const user = auth.getSessionUser(db, token);
-  if (!user) { sendJson(res, 401, { error: 'Not authenticated' }); return null; }
+  if (!user) { sendJson(res, 401, { error: 'Not authenticated', messageAr: 'يجب تسجيل الدخول' }); return null; }
   if (Date.now() - lastActivityWrite > 60_000) {
     const now = new Date().toISOString();
     db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(now, now);
@@ -105,12 +105,12 @@ function requireAuth(req, res) {
 }
 
 function requireAdmin(user, res) {
-  if (user.role !== 'admin') { sendJson(res, 403, { error: 'Admin access required' }); return false; }
+  if (user.role !== 'admin') { sendJson(res, 403, { error: 'Admin access required', messageAr: 'صلاحية المدير مطلوبة' }); return false; }
   return true;
 }
 
 function requireDeveloper(user, res) {
-  if (user.role !== 'developer') { sendJson(res, 403, { error: 'Developer console access required' }); return false; }
+  if (user.role !== 'developer') { sendJson(res, 403, { error: 'Developer console access required', messageAr: 'صلاحية لوحة المطوّر مطلوبة' }); return false; }
   return true;
 }
 
@@ -177,11 +177,11 @@ async function handleApi(req, res, url) {
   // Public: login
   if (p === '/api/login' && method === 'POST') {
     const ip = req.socket.remoteAddress || 'unknown';
-    if (rateLimited(ip)) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.' });
+    if (rateLimited(ip)) return sendJson(res, 429, { error: 'Too many login attempts. Try again later.', messageAr: 'محاولات دخول كثيرة جدًا. أعد المحاولة لاحقًا.' });
     const b = await readBody(req);
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(str(b.username, 50));
     if (!user || !user.active || !auth.verifyPassword(b.password || '', user.password_hash)) {
-      return sendJson(res, 401, { error: 'Invalid username or password' });
+      return sendJson(res, 401, { error: 'Invalid username or password', messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
     }
     const token = auth.createSession(db, user.id);
     db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(new Date().toISOString(), new Date().toISOString());
@@ -194,11 +194,11 @@ async function handleApi(req, res, url) {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.must_change_password && !((p === '/api/me/password' && method === 'POST') || (p === '/api/logout' && method === 'POST') || (p === '/api/me' && method === 'GET'))) {
-    return sendJson(res, 403, { error: 'Change your password before using the POS', code: 'PASSWORD_CHANGE_REQUIRED' });
+    return sendJson(res, 403, { error: 'Change your password before using the POS', messageAr: 'غيّر كلمة المرور قبل استخدام النظام', code: 'PASSWORD_CHANGE_REQUIRED' });
   }
   const allowedWithoutSubscription = ['/api/me', '/api/config', '/api/subscription', '/api/logout', '/api/me/password'];
   if (user.role !== 'developer' && !['trial', 'active'].includes(subscriptionState().status) && !allowedWithoutSubscription.includes(p)) {
-    return sendJson(res, 402, { error: `Subscription ${subscriptionState().status}. Contact the software provider to restore POS access.`, code: 'SUBSCRIPTION_REQUIRED', subscription: subscriptionPayload(user) });
+    return sendJson(res, 402, { error: `Subscription ${subscriptionState().status}. Contact the software provider to restore POS access.`, messageAr: `الاشتراك ${subscriptionState().status}. تواصل مع مزوّد البرنامج لاستعادة الوصول.`, code: 'SUBSCRIPTION_REQUIRED', subscription: subscriptionPayload(user) });
   }
 
   if (p === '/api/subscription' && method === 'GET') return sendJson(res, 200, subscriptionPayload(user));
@@ -210,7 +210,7 @@ async function handleApi(req, res, url) {
     if (!requireDeveloper(user, res)) return;
     const b = await readBody(req);
     const paymentReference = str(b.paymentReference, 120);
-    if (!paymentReference) return sendJson(res, 400, { error: 'Add a payment reference or manual receipt number before renewing' });
+    if (!paymentReference) return sendJson(res, 400, { error: 'Add a payment reference or manual receipt number before renewing', messageAr: 'أضف مرجع الدفع أو رقم الإيصال قبل التجديد' });
     const current = subscriptionState();
     const now = new Date();
     const currentExpiry = new Date(current.expires_at);
@@ -224,7 +224,7 @@ async function handleApi(req, res, url) {
     if (!requireDeveloper(user, res)) return;
     const b = await readBody(req);
     const reason = str(b.reason, 250);
-    if (!reason) return sendJson(res, 400, { error: 'A suspension reason is required' });
+    if (!reason) return sendJson(res, 400, { error: 'A suspension reason is required', messageAr: 'سبب الإيقاف مطلوب' });
     db.prepare(`UPDATE subscriptions SET status = 'suspended', updated_at = ? WHERE id = 1`).run(new Date().toISOString());
     logSubscriptionEvent('suspended', reason, user.username);
     return sendJson(res, 200, subscriptionPayload(user));
@@ -232,7 +232,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/developer/subscription/restore' && method === 'POST') {
     if (!requireDeveloper(user, res)) return;
     const sub = subscriptionState();
-    if (new Date(sub.expires_at).getTime() <= Date.now()) return sendJson(res, 409, { error: 'Expired annual term cannot be restored; record payment and renew instead' });
+    if (new Date(sub.expires_at).getTime() <= Date.now()) return sendJson(res, 409, { error: 'Expired annual term cannot be restored; record payment and renew instead', messageAr: 'لا يمكن استعادة اشتراك منتهٍ؛ سجّل الدفع وجدّد بدلًا من ذلك' });
     db.prepare(`UPDATE subscriptions SET status = 'active', updated_at = ? WHERE id = 1`).run(new Date().toISOString());
     logSubscriptionEvent('restored', 'Subscription restored before expiry', user.username);
     return sendJson(res, 200, subscriptionPayload(user));
@@ -272,16 +272,16 @@ async function handleApi(req, res, url) {
     if (!requireAdmin(user, res)) return;
     const b = await readBody(req);
     const name = str(b.name, 120);
-    if (!name) return sendJson(res, 400, { error: 'Product name is required' });
+    if (!name) return sendJson(res, 400, { error: 'Product name is required', messageAr: 'اسم المنتج مطلوب' });
     const barcode = str(b.barcode, 30) || `9${Date.now().toString().slice(-8)}`;
     const productTax = b.taxRate == null || b.taxRate === '' ? null : num(b.taxRate, -1);
-    if (productTax !== null && (productTax < 0 || productTax > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1' });
+    if (productTax !== null && (productTax < 0 || productTax > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1', messageAr: 'نسبة ضريبة المنتج يجب أن تكون بين 0 و1' });
     try {
       const info = db.prepare('INSERT INTO products(name, category, price, unit, stock, barcode, emoji, tax_rate) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
         .run(name, str(b.category, 60) || 'General', Math.max(0, num(b.price)), str(b.unit, 20) || 'each', Math.max(0, int(b.stock)), barcode, str(b.emoji, 8) || '📦', productTax);
       return sendJson(res, 201, db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
-      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists' });
+      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists', messageAr: 'الباركود مستخدم بالفعل' });
       throw e;
     }
   }
@@ -289,7 +289,7 @@ async function handleApi(req, res, url) {
   if (prodMatch) {
     const id = +prodMatch[1];
     const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-    if (!existing) return sendJson(res, 404, { error: 'Product not found' });
+    if (!existing) return sendJson(res, 404, { error: 'Product not found', messageAr: 'المنتج غير موجود' });
     if (method === 'PUT') {
       if (!requireAdmin(user, res)) return;
       const b = await readBody(req);
@@ -303,12 +303,12 @@ async function handleApi(req, res, url) {
         emoji: b.emoji !== undefined ? str(b.emoji, 8) || '📦' : existing.emoji,
         tax_rate: b.taxRate === undefined ? existing.tax_rate : (b.taxRate === '' || b.taxRate === null ? null : num(b.taxRate, -1)),
       };
-      if (next.tax_rate !== null && (next.tax_rate < 0 || next.tax_rate > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1' });
+      if (next.tax_rate !== null && (next.tax_rate < 0 || next.tax_rate > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1', messageAr: 'نسبة ضريبة المنتج يجب أن تكون بين 0 و1' });
       try {
         db.prepare('UPDATE products SET name=?, category=?, price=?, unit=?, stock=?, barcode=?, emoji=?, tax_rate=? WHERE id=?')
           .run(next.name, next.category, next.price, next.unit, next.stock, next.barcode, next.emoji, next.tax_rate, id);
       } catch (e) {
-        if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists' });
+        if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists', messageAr: 'الباركود مستخدم بالفعل' });
         throw e;
       }
       return sendJson(res, 200, db.prepare('SELECT * FROM products WHERE id = ?').get(id));
@@ -327,13 +327,13 @@ async function handleApi(req, res, url) {
   if (p === '/api/customers' && method === 'POST') {
     const b = await readBody(req);
     const name = str(b.name, 120);
-    if (!name) return sendJson(res, 400, { error: 'Customer name is required' });
+    if (!name) return sendJson(res, 400, { error: 'Customer name is required', messageAr: 'اسم العميل مطلوب' });
     const phone = str(b.phone, 30) || null;
     try {
       const info = db.prepare('INSERT INTO customers(name, phone, email) VALUES(?, ?, ?)').run(name, phone, str(b.email, 120));
       return sendJson(res, 201, db.prepare('SELECT * FROM customers WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
-      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Phone number already registered' });
+      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Phone number already registered', messageAr: 'رقم الهاتف مسجّل بالفعل' });
       throw e;
     }
   }
@@ -342,7 +342,7 @@ async function handleApi(req, res, url) {
     if (!requireAdmin(user, res)) return;
     const b = await readBody(req);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(+custMatch[1]);
-    if (!c) return sendJson(res, 404, { error: 'Customer not found' });
+    if (!c) return sendJson(res, 404, { error: 'Customer not found', messageAr: 'العميل غير موجود' });
     db.prepare('UPDATE customers SET name=?, phone=?, email=?, points=? WHERE id=?')
       .run(str(b.name, 120) || c.name, str(b.phone, 30) || c.phone, str(b.email, 120), Math.max(0, int(b.points, c.points)), c.id);
     return sendJson(res, 200, db.prepare('SELECT * FROM customers WHERE id = ?').get(c.id));
@@ -359,7 +359,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/shifts/open' && method === 'POST') {
     const register = registerFor(req);
     const open = db.prepare("SELECT id FROM shifts WHERE status = 'open' AND register = ?").get(register);
-    if (open) return sendJson(res, 409, { error: `A shift is already open on ${register}` });
+    if (open) return sendJson(res, 409, { error: `A shift is already open on ${register}`, messageAr: `توجد وردية مفتوحة بالفعل على ${register}` });
     const b = await readBody(req);
     const info = db.prepare('INSERT INTO shifts(cashier_id, register, opening_float) VALUES(?, ?, ?)')
       .run(user.id, register, Math.max(0, num(b.openingFloat)));
@@ -367,7 +367,7 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/shifts/close' && method === 'POST') {
     const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
-    if (!shift) return sendJson(res, 404, { error: 'No open shift' });
+    if (!shift) return sendJson(res, 404, { error: 'No open shift', messageAr: 'لا توجد وردية مفتوحة' });
     const b = await readBody(req);
     const closing = Math.max(0, num(b.closingAmount));
     const cashSales = db.prepare("SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE shift_id = ? AND payment = 'cash' AND status = 'completed'").get(shift.id).s;
@@ -388,18 +388,18 @@ async function handleApi(req, res, url) {
   if (p === '/api/sales' && method === 'POST') {
     const b = await readBody(req);
     const idempotencyKey = str(b.idempotencyKey, 100);
-    if (!/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return sendJson(res, 400, { error: 'A unique idempotency key is required for each sale' });
-    if (b.payment !== undefined && b.payment !== 'cash') return sendJson(res, 400, { error: 'This register accepts cash payments only' });
+    if (!/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return sendJson(res, 400, { error: 'A unique idempotency key is required for each sale', messageAr: 'مفتاح فريد لكل عملية بيع مطلوب' });
+    if (b.payment !== undefined && b.payment !== 'cash') return sendJson(res, 400, { error: 'This register accepts cash payments only', messageAr: 'هذا الجهاز يقبل الدفع النقدي فقط' });
     const prior = db.prepare('SELECT * FROM sales WHERE idempotency_key = ?').get(idempotencyKey);
     if (prior) {
       prior.items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(prior.id);
       return sendJson(res, 200, prior);
     }
     const items = Array.isArray(b.items) ? b.items : [];
-    if (!items.length) return sendJson(res, 400, { error: 'Cart is empty' });
+    if (!items.length) return sendJson(res, 400, { error: 'Cart is empty', messageAr: 'الفاتورة فارغة' });
 
     const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
-    if (!shift) return sendJson(res, 409, { error: 'No open shift for this register. Open a shift before selling.' });
+    if (!shift) return sendJson(res, 409, { error: 'No open shift for this register. Open a shift before selling.', messageAr: 'لا توجد وردية مفتوحة لهذا الجهاز. افتح وردية قبل البيع.' });
 
     const settings = getSettings(db);
     const taxRate = Math.min(1, Math.max(0, num(settings.tax_rate, 0.08)));
@@ -409,10 +409,10 @@ async function handleApi(req, res, url) {
     // Validate stock first
     for (const it of items) {
       const qty = Number(it.qty);
-      if (!Number.isInteger(qty) || qty < 1 || qty > 10000) return sendJson(res, 400, { error: 'Each quantity must be a positive integer' });
+      if (!Number.isInteger(qty) || qty < 1 || qty > 10000) return sendJson(res, 400, { error: 'Each quantity must be a positive integer', messageAr: 'كل كمية يجب أن تكون عددًا صحيحًا موجبًا' });
       const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(int(it.id));
-      if (!prod || !prod.active) return sendJson(res, 400, { error: `Product ${it.id} not found` });
-      if (prod.stock < qty) return sendJson(res, 400, { error: `Insufficient stock for ${prod.name}` });
+      if (!prod || !prod.active) return sendJson(res, 400, { error: `Product ${it.id} not found`, messageAr: `المنتج ${it.id} غير موجود` });
+      if (prod.stock < qty) return sendJson(res, 400, { error: `Insufficient stock for ${prod.name}`, messageAr: `المخزون غير كافٍ للمنتج ${prod.name}` });
     }
 
     const saleItems = items.map(it => {
@@ -434,7 +434,7 @@ async function handleApi(req, res, url) {
     let pointsDiscount = 0;
     if (b.customerId) {
       customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(int(b.customerId));
-      if (!customer) return sendJson(res, 400, { error: 'Customer not found' });
+      if (!customer) return sendJson(res, 400, { error: 'Customer not found', messageAr: 'العميل غير موجود' });
       const maxRedeem = pointsValue > 0 ? Math.floor(afterDiscount / pointsValue) : 0;
       pointsRedeemed = Math.min(customer.points, Math.max(0, int(b.redeemPoints)), maxRedeem);
       pointsDiscount = round2(pointsRedeemed * pointsValue);
@@ -460,7 +460,7 @@ async function handleApi(req, res, url) {
     const total = round2(taxable + tax);
     const payment = 'cash';
     const tendered = num(b.tendered);
-    if (tendered < total) return sendJson(res, 400, { error: 'Tendered amount is less than the total' });
+    if (tendered < total) return sendJson(res, 400, { error: 'Tendered amount is less than the total', messageAr: 'المبلغ المدفوع أقل من الإجمالي' });
     const change = round2(tendered - total);
     const pointsEarned = customer ? Math.floor(total * pointsPerDollar) : 0;
 
@@ -501,19 +501,19 @@ async function handleApi(req, res, url) {
   if (saleAction && method === 'POST') {
     if (!requireAdmin(user, res)) return;
     const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(+saleAction[1]);
-    if (!sale) return sendJson(res, 404, { error: 'Sale not found' });
-    if (sale.status !== 'completed') return sendJson(res, 409, { error: `Sale is already ${sale.status}` });
+    if (!sale) return sendJson(res, 404, { error: 'Sale not found', messageAr: 'الفاتورة غير موجودة' });
+    if (sale.status !== 'completed') return sendJson(res, 409, { error: `Sale is already ${sale.status}`, messageAr: `الفاتورة بحالة ${sale.status} بالفعل` });
     let stripeRefund = null;
     if (sale.payment === 'card') {
-      if (!STRIPE_SECRET_KEY) return sendJson(res, 409, { error: 'Configure STRIPE_SECRET_KEY and reconcile this historical card refund with the provider first' });
-      if (!sale.payment_intent_id) return sendJson(res, 409, { error: 'This card sale has no provider payment reference; reconcile it manually' });
+      if (!STRIPE_SECRET_KEY) return sendJson(res, 409, { error: 'Configure STRIPE_SECRET_KEY and reconcile this historical card refund with the provider first', messageAr: 'اضبط STRIPE_SECRET_KEY وسوِّ هذه الاستعادة التاريخية مع مزوّد الدفع أولًا' });
+      if (!sale.payment_intent_id) return sendJson(res, 409, { error: 'This card sale has no provider payment reference; reconcile it manually', messageAr: 'لا يوجد مرجع دفع لهذه الفاتورة البطاقية؛ سوِّها يدويًا' });
       try {
         stripeRefund = await stripeCreateRefund(sale.payment_intent_id, sale.id);
         if (stripeRefund.status === 'failed' || stripeRefund.status === 'canceled') {
-          return sendJson(res, 502, { error: `Provider refund is ${stripeRefund.status}; stock and sale records were not changed` });
+          return sendJson(res, 502, { error: `Provider refund is ${stripeRefund.status}; stock and sale records were not changed`, messageAr: `حالة الاستعادة لدى المزوّد ${stripeRefund.status}؛ لم يتم تعديل المخزون أو الفاتورة` });
         }
       } catch (e) {
-        return sendJson(res, 502, { error: 'Payment provider refund failed: ' + e.message });
+        return sendJson(res, 502, { error: 'Payment provider refund failed: ' + e.message, messageAr: 'فشلت الاستعادة لدى مزوّد الدفع: ' + e.message });
       }
     }
     const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(sale.id);
@@ -568,13 +568,13 @@ async function handleApi(req, res, url) {
     const b = await readBody(req);
     const username = str(b.username, 50).toLowerCase();
     const password = String(b.password || '');
-    if (!username || password.length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `Username required, password min. ${MIN_PASSWORD_LENGTH} characters` });
+    if (!username || password.length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `Username required, password min. ${MIN_PASSWORD_LENGTH} characters`, messageAr: `اسم المستخدم مطلوب، وكلمة المرور ${MIN_PASSWORD_LENGTH} حرفًا على الأقل` });
     try {
       const info = db.prepare('INSERT INTO users(username, password_hash, role, name, must_change_password) VALUES(?, ?, ?, ?, 1)')
         .run(username, auth.hashPassword(password), b.role === 'admin' ? 'admin' : 'cashier', str(b.name, 120) || username);
       return sendJson(res, 201, db.prepare('SELECT id, username, role, name, active FROM users WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
-      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Username already exists' });
+      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Username already exists', messageAr: 'اسم المستخدم موجود بالفعل' });
       throw e;
     }
   }
@@ -582,7 +582,7 @@ async function handleApi(req, res, url) {
   if (userMatch) {
     if (!requireAdmin(user, res)) return;
     const target = db.prepare('SELECT * FROM users WHERE id = ?').get(+userMatch[1]);
-    if (!target || target.role === 'developer') return sendJson(res, 404, { error: 'User not found' });
+    if (!target || target.role === 'developer') return sendJson(res, 404, { error: 'User not found', messageAr: 'المستخدم غير موجود' });
     if (method === 'PUT') {
       const b = await readBody(req);
       const next = {
@@ -590,9 +590,9 @@ async function handleApi(req, res, url) {
         name: b.name !== undefined ? str(b.name, 120) || target.name : target.name,
         active: b.active !== undefined ? (b.active ? 1 : 0) : target.active,
       };
-      if (target.id === user.id && next.active === 0) return sendJson(res, 400, { error: 'You cannot deactivate yourself' });
+      if (target.id === user.id && next.active === 0) return sendJson(res, 400, { error: 'You cannot deactivate yourself', messageAr: 'لا يمكنك تعطيل حسابك' });
       if (b.password) {
-        if (String(b.password).length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `Password min. ${MIN_PASSWORD_LENGTH} characters` });
+        if (String(b.password).length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `Password min. ${MIN_PASSWORD_LENGTH} characters`, messageAr: `كلمة المرور ${MIN_PASSWORD_LENGTH} حرفًا على الأقل` });
         db.prepare('UPDATE users SET role=?, name=?, active=?, password_hash=?, must_change_password=1 WHERE id=?')
           .run(next.role, next.name, next.active, auth.hashPassword(b.password), target.id);
         db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?')
@@ -603,7 +603,7 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, db.prepare('SELECT id, username, role, name, active FROM users WHERE id = ?').get(target.id));
     }
     if (method === 'DELETE') {
-      if (target.id === user.id) return sendJson(res, 400, { error: 'You cannot delete yourself' });
+      if (target.id === user.id) return sendJson(res, 400, { error: 'You cannot delete yourself', messageAr: 'لا يمكنك حذف حسابك' });
       db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(target.id);
       return sendJson(res, 200, { ok: true });
     }
@@ -611,8 +611,8 @@ async function handleApi(req, res, url) {
   if (p === '/api/me/password' && method === 'POST') {
     const b = await readBody(req);
     const me = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
-    if (!auth.verifyPassword(b.current || '', me.password_hash)) return sendJson(res, 401, { error: 'Current password is incorrect' });
-    if (String(b.next || '').length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `New password min. ${MIN_PASSWORD_LENGTH} characters` });
+    if (!auth.verifyPassword(b.current || '', me.password_hash)) return sendJson(res, 401, { error: 'Current password is incorrect', messageAr: 'كلمة المرور الحالية غير صحيحة' });
+    if (String(b.next || '').length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `New password min. ${MIN_PASSWORD_LENGTH} characters`, messageAr: `كلمة المرور الجديدة ${MIN_PASSWORD_LENGTH} حرفًا على الأقل` });
     db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(auth.hashPassword(b.next), user.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(user.id, auth.parseCookies(req).pos_session || '');
     return sendJson(res, 200, { ok: true });
@@ -629,10 +629,10 @@ async function handleApi(req, res, url) {
     for (const k of allowed) if (b[k] !== undefined) obj[k] = str(b[k], limits[k] || 60);
     if (obj.tax_rate !== undefined) {
       const t = num(obj.tax_rate, -1);
-      if (t < 0 || t > 1) return sendJson(res, 400, { error: 'Tax rate must be between 0 and 1 (e.g. 0.09)' });
+      if (t < 0 || t > 1) return sendJson(res, 400, { error: 'Tax rate must be between 0 and 1 (e.g. 0.09)', messageAr: 'نسبة الضريبة يجب أن تكون بين 0 و1 (مثال 0.14)' });
     }
     if (obj.currency_code !== undefined && !['USD', 'EUR', 'GBP', 'EGP'].includes(obj.currency_code.toUpperCase())) {
-      return sendJson(res, 400, { error: 'Currency code must be USD, EUR, GBP, or EGP' });
+      return sendJson(res, 400, { error: 'Currency code must be USD, EUR, GBP, or EGP', messageAr: 'كود العملة يجب أن يكون USD أو EUR أو GBP أو EGP' });
     }
     setSettings(db, obj);
     return sendJson(res, 200, getSettings(db));
@@ -640,7 +640,7 @@ async function handleApi(req, res, url) {
 
   // New transactions are cash-only; keep the old route explicitly disabled.
   if (p === '/api/payments/intent' && method === 'POST') {
-    return sendJson(res, 410, { error: 'Card payments are disabled. This POS accepts cash only.' });
+    return sendJson(res, 410, { error: 'Card payments are disabled. This POS accepts cash only.', messageAr: 'الدفع بالبطاقة معطّل. هذا النظام يقبل النقدي فقط.' });
   }
 
   // ----- Backup -----
@@ -661,7 +661,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/backup/import' && method === 'POST') {
     if (!requireAdmin(user, res)) return;
     const b = await readBody(req);
-    if (!Array.isArray(b.products) || !Array.isArray(b.sales)) return sendJson(res, 400, { error: 'Invalid backup file' });
+    if (!Array.isArray(b.products) || !Array.isArray(b.sales)) return sendJson(res, 400, { error: 'Invalid backup file', messageAr: 'ملف النسخة الاحتياطية غير صالح' });
     db.exec('BEGIN');
     try {
       db.exec('DELETE FROM sale_items; DELETE FROM sales; DELETE FROM shifts; DELETE FROM customers; DELETE FROM products;');
@@ -681,7 +681,7 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
-  return sendJson(res, 404, { error: 'API route not found' });
+  return sendJson(res, 404, { error: 'API route not found', messageAr: 'المسار غير موجود' });
 }
 
 // ---------- Server ----------
@@ -711,7 +711,7 @@ const server = http.createServer(async (req, res) => {
     fs.createReadStream(filePath).pipe(res);
   } catch (e) {
     console.error('Request error:', e);
-    if (!res.headersSent) sendJson(res, 500, { error: 'Internal server error' });
+    if (!res.headersSent) sendJson(res, 500, { error: 'Internal server error', messageAr: 'خطأ داخلي في الخادم' });
   }
 });
 

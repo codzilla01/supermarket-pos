@@ -1,6 +1,17 @@
 # 🛒 FreshMart — Supermarket POS (Production-oriented)
 
+نظام نقاط بيع سوبر ماركت بواجهة **عربية كاملة (RTL)** وإنجليزية، وبدون أي حزم خارجية (**zero npm dependencies** — Node.js ≥ 22 built-ins only): قاعدة بيانات SQLite، حسابات وأدوار، ورديات كاشير مع تسوية نقدية، نقاط ولاء، مرتجعات، طابور بيع دون اتصال، تحصيل نقدي فقط، وفترة تجريبية 14 يومًا مع اشتراك سنوي.
+
 A supermarket point-of-sale application and subscription-managed installation: **zero npm dependencies** (Node.js ≥ 22 built-ins only), SQLite database, user accounts with roles, cash shifts with reconciliation, loyalty points, returns, offline sales queue, cash-only checkout, and a 14-day trial / annual license lifecycle.
+
+## 🌐 اللغة والاتجاه (Language & direction)
+
+- **العربية هي اللغة الافتراضية** مع اتجاه RTL وخط عربي مناسب؛ الإنجليزية متاحة بضغطة واحدة من زر اللغة أعلى الشاشة أو من **الإعدادات → اللغة**.
+- التبديل يُحفظ **على هذا الجهاز فقط** (`localStorage`)، فلا يتأثر بقية أجهزة الكاشير؛ بيانات المتجر والأسعار والمستخدمين مشتركة كما هي.
+- أسماء **الأقسام والوحدات** تظهر مترجمة (خضار وفواكه، ألبان وبيض، قطعة، كجم…) لكنها تُحفظ في قاعدة البيانات بالإنجليزية القياسية، حتى تبقى الفلاتر والتقارير وتصدير CSV متسقة بين اللغتين.
+- **الأرقام والتواريخ تبقى بالأرقام اللاتينية** (1234.50) لتوافق الباركود وسرعة الكاشير، مع فواصل وتنسيق حسب اللغة.
+- **رسائل أخطاء الخادم** ترجع بالإنجليزية `error` والعربية `messageAr` معًا؛ الواجهة تعرض الرسالة المطابقة للغة النشطة دون كسر أي عميل API قديم.
+- الأسماء التي يكتبها المستخدم (منتجات، عملاء، اسم المتجر، تذييل الإيصال) تُعرض كما هي بغض النظر عن اللغة، والإيصال الحراري 80mm يُطبع من اليمين لليسار في الوضع العربي.
 
 ## Secure first startup
 
@@ -19,6 +30,7 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 
 ## Features
 
+- **Bilingual Arabic/English UI** — Arabic RTL by default with a per-terminal language switch, localized categories/units/statuses, Arabic server error messages, and a thermal receipt that prints in the active direction
 - **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, store default plus per-product tax rates, configurable receipt address/phone/VAT number/footer, 80 mm thermal-print layout; sale retries use idempotency keys
 - **Starter catalog** — 33 default grocery items; admins can add missing starter products and edit names, prices, tax rates, and stock from Inventory without overwriting existing edits
 - **Notifications** — persistent visual alert center with optional tones, browser notifications, low/out-of-stock alerts, cash sale/shift events, and offline/sync warnings
@@ -57,8 +69,10 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Tests and health check
 
 ```bash
-npm test   # isolated API tests using a temporary database
+npm test   # API tests (temporary database) + localization/translation tests
 ```
+
+The localization suite (`test/i18n.test.js`) fails the build if any translation key used by the UI is missing in Arabic or English, if a placeholder such as `{id}` disappears in either language, or if an API error loses its Arabic `messageAr`.
 
 The unauthenticated `GET /healthz` endpoint returns `{ "status": "ok" }` after confirming SQLite responds; CI runs the same suite on pushes and pull requests.
 
