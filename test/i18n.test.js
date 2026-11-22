@@ -150,10 +150,27 @@ test('the app shell is Arabic, RTL and loads the i18n layer before app.js', () =
   assert.match(html, /<p class="cart-empty" id="cart-empty"[\s\S]*?<\/p>\s*<div class="cart-items" id="cart-items">/);
 });
 
-test('the service worker caches the i18n bundle and bumps its cache version', () => {
+test('the service worker caches the i18n bundle and versions its cache', () => {
   const sw = read('sw.js');
   assert.match(sw, /'\/i18n\.js'/);
-  assert.match(sw, /freshmart-pos-v2/);
+  assert.match(sw, /const CACHE = 'freshmart-pos-v\d+-/);
+});
+
+test('an unreachable API is explained instead of a bare status code', () => {
+  const html = read('index.html');
+  const app = read('app.js');
+  const i18n = read('i18n.js');
+  // a visible diagnostics card the cashier can act on
+  assert.match(html, /id="diagnostics-card"/);
+  assert.match(html, /id="diag-retry"/);
+  assert.match(html, /data-i18n="diag\.fix1"/);
+  // HTML replies (static hosting / stopped server) are detected, not rendered as "failed (404)"
+  assert.match(app, /API_NOT_SERVED/);
+  assert.match(app, /get\('content-type'\)/);
+  assert.match(app, /err\.apiMissing/);
+  for (const key of ['err.apiMissing', 'err.apiRoute', 'err.serverDown', 'diag.title', 'diag.retry', 'diag.copy']) {
+    assert.match(i18n, new RegExp(`'${key.replace(/\./g, '\\.')}'`), `missing i18n key ${key}`);
+  }
 });
 
 test('the server ships an Arabic message for every user-facing error', () => {
