@@ -84,6 +84,16 @@ This remains a production-oriented baseline, not a certified retail deployment o
 
 The developer console and its license/audit data live in the same SQLite database as the POS. For the selected separate-installation model, the current implementation can activate and monitor one installation at a time; the developer must connect to each store installation. It does **not** remotely aggregate, provision or suspend other independent servers. A central multi-store control plane requires a separately hosted licensing API, secure per-install credentials and an agreed domain; it is not included in this repository. Annual activation is manual after the developer records a payment/receipt reference—there is no online recurring billing or automatic payment verification.
 
+## استكشاف الأعطال: «فشل الطلب (404)»
+
+إذا ظهرت هذه الرسالة عند فتح النظام فمعناها أن المتصفح حمّل **الواجهة** فقط، لكن طلبات `‎/api/…` لم تصل إلى خادم Node.js. الأسباب الشائعة:
+
+1. **رابط استضافة ثابتة** (Vercel/Netlify/GitHub Pages): تخدم `public/` فقط ولا تشغّل `server.js` ولا SQLite، فترد على كل `‎/api/…` بصفحة 404. شغّل النظام على خادم Node.js.
+2. **خادم متوقف**: شغّل `node server.js` على جهاز الكاشير/السيرفر، ثم افتح عنوان الخادم نفسه مثل `http://localhost:3000`.
+3. **بروكسي عكسي لا يمرّر `‎/api/…`** إلى المنفذ الصحيح (nginx/Caddy)، أو جدار ناري يمنع المسار.
+
+لذلك يعرض التطبيق تلقائيًا بطاقة تشخيص عربية بجانب شاشة الدخول: رابط الصفحة، نتيجة فحص حقيقي لـ `‎/api/config` (JSON ✅ أو HTML ❌)، حالة الشبكة، وخطوات الإصلاح، مع أزرار **إعادة المحاولة** و**نسخ التقرير** لمشاركته مع المسؤول. وحين يرد الخادم بصفحة HTML أو خطأ 404/5xx تظهر رسالة تشرح السبب بدل رمز الحالة وحده.
+
 ## Deployment notes
 
 - Run behind a reverse proxy (nginx/Caddy) with **HTTPS** — session cookies are `HttpOnly; SameSite=Lax; Secure` by default. Set `POS_COOKIE_SECURE=false` only for local plain-HTTP development.

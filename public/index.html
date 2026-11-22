@@ -23,6 +23,30 @@
     <p class="muted small" data-i18n="login.hint">استخدم بيانات الحساب التي وفّرها مسؤول النظام.</p>
     <button type="button" class="btn ghost small lang-switch" data-lang-toggle data-i18n-title="app.langSwitchTitle" data-i18n="app.langSwitch">English</button>
   </form>
+  <section class="diagnostics-card" id="diagnostics-card" hidden aria-live="polite">
+    <h2 data-i18n="diag.title">🔌 تعذّر الاتصال بخادم نقاط البيع</h2>
+    <p class="muted" data-i18n="diag.lead">هذا المتصفح وصل إلى صفحة الواجهة فقط، لكن طلبات النظام (‎/api/…) لا تصل إلى خادم Node.js. الشائع أن الرابط المنشور استضافة ثابتة، أو أن خادم المتجر متوقف.</p>
+    <dl class="diag-grid">
+      <div><dt data-i18n="diag.url">رابط الصفحة</dt><dd id="diag-url">—</dd></div>
+      <div><dt data-i18n="diag.api">استجابة ‎/api/me</dt><dd id="diag-api">—</dd></div>
+      <div><dt data-i18n="diag.state">حالة التطبيق</dt><dd id="diag-state">—</dd></div>
+      <div><dt data-i18n="diag.online">اتصال الشبكة</dt><dd id="diag-online">—</dd></div>
+    </dl>
+    <div class="diag-fixes">
+      <p><strong data-i18n="diag.fixTitle">ما الذي يصلحه؟</strong></p>
+      <ol>
+        <li data-i18n="diag.fix1">شغّل خادم المتجر على جهاز الكاشير أو السيرفر: <code>node server.js</code> (وليس صفحة مستضافة ثابتة).</li>
+        <li data-i18n="diag.fix2">افتح عنوان الخادم نفسه، مثل <code>http://localhost:3000</code>، لا رابط معاينة/استضافة أخرى.</li>
+        <li data-i18n="diag.fix3">إن كان نشرك على استضافة ثابتة (Vercel/Netlify)، فهي لا تشغّل SQLite ولا الخادم؛ انقل التطبيق إلى خادم Node.js.</li>
+        <li data-i18n="diag.fix4">تحقق من إعدادات الشبكة/الجدار الناري والبروكسي العكسي (nginx/Caddy) التي تمرّر ‎/api/… إلى الخادم.</li>
+      </ol>
+    </div>
+    <div class="diag-actions">
+      <button type="button" class="btn primary" id="diag-retry" data-i18n="diag.retry">↻ إعادة المحاولة</button>
+      <button type="button" class="btn ghost" id="diag-copy" data-i18n="diag.copy">⧉ نسخ التقرير</button>
+      <span class="muted small" id="diag-status"></span>
+    </div>
+  </section>
 </div>
 
 <!-- ============ APP ============ -->

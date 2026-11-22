@@ -34,23 +34,50 @@ const unitCanonical = unit => I18N.unitCanonical(unit);
 const statusLabel = status => t(`status.${status}`);
 const roleLabel = role => t(`role.${role}`);
 
+/** Turn an API failure into an error the cashier can act on. */
+function apiError(status, err, contentType) {
+  const isJson = String(contentType || '').includes('application/json');
+  if (!isJson) {
+    // A host that answers /api/* with an HTML page (static hosting, missing Node
+    // process, proxy timeout, wrong base URL) is never a POS server reply.
+    return Object.assign(new Error(t(status === 404 ? 'err.apiMissing' : 'err.apiHtml', { status })), {
+      code: 'API_NOT_SERVED', status, html: true, retryable: true,
+    });
+  }
+  if (status === 404) return Object.assign(new Error(t('err.apiRoute')), { code: 'API_NOT_FOUND', status, retryable: true });
+  if (status >= 500) return Object.assign(new Error(t('err.serverDown', { status })), { code: 'SERVER_ERROR', status, retryable: true });
+  // Server sends an English `error` plus an Arabic `messageAr`; show the one that matches the UI language.
+  return new Error((lang() === 'ar' ? (err.messageAr || err.error) : err.error) || t('err.request', { status }));
+}
+
 async function api(path, opts = {}) {
   let res;
   try {
-    const headers = { 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(), ...(opts.headers || {}) };
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(), ...(opts.headers || {}) };
     res = await fetch(path, { ...opts, headers });
   } catch (e) {
     throw Object.assign(new Error(t('err.network')), { offline: true });
   }
   if (res.status === 401) { showLogin(); throw new Error(t('err.session')); }
   if (!res.ok) {
+    const contentType = res.headers.get('content-type');
     const err = await res.json().catch(() => ({}));
     if (res.status === 402 && me) { me.subscriptionStatus = err.subscription?.status || 'expired'; showApp(); }
-    // Server sends an English `error` plus an Arabic `messageAr`; show the one that matches the UI language.
-    const message = (lang() === 'ar' ? (err.messageAr || err.error) : err.error) || t('err.request', { status: res.status });
-    throw new Error(message);
+    throw apiError(res.status, err, contentType);
   }
   return res.json();
+}
+
+/** Show a blocking, described error instead of a bare HTTP code. */
+function reportApiProblem(err) {
+  if (err && err.code === 'API_NOT_SERVED') {
+    $('#login-error').textContent = '⚠️ ' + err.message;
+    $('#login-error').hidden = false;
+    $('#diagnostics-card').hidden = false;
+    runDiagnostics();
+    return true;
+  }
+  return false;
 }
 
 function toast(msg) {
@@ -195,6 +222,7 @@ function relocalize() {
   I18N.apply(document);
   syncLangControls();
   document.title = t('app.title', { store: settings.store_name });
+  runDiagnostics();
   renderClock();
   renderNotifications();
   if (!me) return;
@@ -213,6 +241,83 @@ function relocalize() {
   if (lastSale && !$('#receipt-modal').hidden) showReceipt(lastSale);
 }
 I18N.onChange(relocalize);
+
+// ---------- Server diagnostics (the "request failed (404)" case) ----------
+let diagBusy = false;
+function diagReport() {
+  return [
+    `URL: ${location.href}`,
+    `State: ${$('#diag-state').textContent}`,
+    `GET /api/me: ${$('#diag-api').textContent}`,
+    `Network: ${navigator.onLine ? 'online' : 'offline'}`,
+    `Lang: ${lang()}`,
+    `UA: ${navigator.userAgent}`,
+  ].join('\n');
+}
+
+/** Probe the API and fill the diagnostics card so the failure is self-explanatory. */
+async function runDiagnostics() {
+  const card = $('#diagnostics-card');
+  if (!card || card.hidden) return;
+  if (diagBusy) return;
+  diagBusy = true;
+  $('#diag-url').textContent = location.href;
+  $('#diag-online').textContent = navigator.onLine ? t('diag.onlineYes') : t('diag.onlineNo');
+  $('#diag-api').textContent = t('diag.checking');
+  $('#diag-state').textContent = t('diag.checking');
+  let healthy = false;
+  try {
+    // /api/config answers 401 JSON when the server is alive — perfect liveness probe.
+    const r = await fetch('/api/config', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const type = r.headers.get('content-type') || '';
+    healthy = /json/i.test(type) && r.status < 500;
+    $('#diag-api').textContent = healthy
+      ? `HTTP ${r.status} · JSON ✅`
+      : `HTTP ${r.status} · ${type.split(';')[0] || 'HTML'} ❌`;
+  } catch {
+    $('#diag-api').textContent = t('err.network');
+  }
+  $('#diag-state').textContent = healthy ? t('diag.stateOk') : t('diag.stateUp');
+  diagBusy = false;
+}
+
+$('#diag-retry').addEventListener('click', async () => {
+  const status = $('#diag-status');
+  status.textContent = t('diag.retrying');
+  try {
+    const r = await fetch('/api/config', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const type = r.headers.get('content-type') || '';
+    if (!/json/i.test(type)) throw new Error(t('err.apiMissing', { status: r.status }));
+    status.textContent = t('diag.retryOk');
+    $('#diagnostics-card').hidden = true;
+    location.reload();
+  } catch (e) {
+    status.textContent = `${t('diag.retryFail')} — ${e.message}`;
+    runDiagnostics();
+  }
+});
+
+$('#diag-copy').addEventListener('click', async () => {
+  const status = $('#diag-status');
+  const text = diagReport();
+  try {
+    await navigator.clipboard.writeText(text);
+    status.textContent = t('diag.copied');
+  } catch {
+    // Fallback for non-secure contexts (plain http on a LAN IP).
+    const area = document.createElement('textarea');
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    area.remove();
+    status.textContent = ok ? t('diag.copied') : t('diag.copyFailed');
+  }
+});
+
+window.addEventListener('online', () => runDiagnostics());
+window.addEventListener('offline', () => runDiagnostics());
 
 // ---------- Auth / login ----------
 function showLogin() {
@@ -338,8 +443,10 @@ $('#login-form').addEventListener('submit', async e => {
       await syncQueue();
     }
   } catch (e2) {
-    err.textContent = t('err.prefix', { message: e2.message });
-    err.hidden = false;
+    if (!reportApiProblem(e2)) {
+      err.textContent = t('err.prefix', { message: e2.message });
+      err.hidden = false;
+    }
   }
 });
 
@@ -1070,8 +1177,11 @@ async function refreshAll() {
         await syncQueue();
       }
     }
-  } catch {
+  } catch (err) {
     showLogin();
+    // A fresh visitor has no session (401) — that is normal. But if the API is not
+    // served at all (404/HTML/5xx) the POS can never log in, so explain it loudly.
+    if (err && err.code === 'API_NOT_SERVED') reportApiProblem(err);
   }
   // Offline support
   if ('serviceWorker' in navigator) {
