@@ -1,6 +1,6 @@
 {
   "name": "supermarket-pos",
-  "version": "2.1.1",
+  "version": "2.1.3",
   "description": "FreshMart Supermarket POS — production-oriented POS foundation (SQLite, auth, shifts, loyalty, optional Stripe checkout)",
   "main": "server.js",
   "scripts": {

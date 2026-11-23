@@ -909,6 +909,7 @@ let purchaseRows = [];
 
 const purchasePaymentLabel = status => t(`pur.pay.${status}`);
 const paymentBadgeClass = status => ({ paid: '', partial: 'low', unpaid: 'out' })[status] || '';
+const paymentStatusFor = (total, paid) => (total === 0 || paid >= total - 0.009 ? 'paid' : paid > 0 ? 'partial' : 'unpaid');
 
 async function renderPurchases() {
   if (me?.role !== 'admin') return;
@@ -921,7 +922,7 @@ async function renderPurchases() {
     <td dir="ltr">${esc(s.phone || '—')}</td>
     <td><bdi>${s.purchase_count}</bdi></td>
     <td>${money(s.balance)}</td>
-    <td><button class="icon-btn" data-sup-edit="${s.id}" title="${esc(t('sup.edit'))}">✏️</button>${s.active ? `<button class="icon-btn" data-sup-off="${s.id}" title="${esc(t('sup.deactivate'))}">🚫</button>` : ''}</td>
+    <td><button class="icon-btn" data-sup-statement="${s.id}" title="${esc(t('stm.open'))}">📄</button><button class="icon-btn" data-sup-edit="${s.id}" title="${esc(t('sup.edit'))}">✏️</button>${s.active ? `<button class="icon-btn" data-sup-off="${s.id}" title="${esc(t('sup.deactivate'))}">🚫</button>` : ''}</td>
   </tr>`).join('') : `<tr><td colspan="5" class="muted">${esc(t('sup.empty'))}</td></tr>`;
 
   const posted = purchases.filter(p => p.status === 'posted');
@@ -944,6 +945,7 @@ async function renderPurchases() {
   </tr>`).join('') : `<tr><td colspan="8" class="muted">${esc(t('pur.empty'))}</td></tr>`;
 
   $$('#suppliers-body [data-sup-edit]').forEach(b => b.addEventListener('click', () => openSupplierModal(supplierRows.find(x => x.id === +b.dataset.supEdit))));
+  $$('#suppliers-body [data-sup-statement]').forEach(b => b.addEventListener('click', () => openSupplierStatement(+b.dataset.supStatement)));
   $$('#suppliers-body [data-sup-off]').forEach(b => b.addEventListener('click', async () => {
     if (!confirm(t('sup.deactivateConfirm'))) return;
     try {
@@ -978,6 +980,76 @@ $('#supplier-form').addEventListener('submit', async e => {
     toast(t('sup.saved'));
     await renderPurchases();
   } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+// ---------- Supplier statement ----------
+let statementSupplierId = null;
+let statementData = null;
+
+async function openSupplierStatement(supplierId) {
+  statementSupplierId = supplierId;
+  $('#stm-days').value = '90';
+  openModal('#statement-modal');
+  await loadSupplierStatement();
+}
+
+async function loadSupplierStatement() {
+  if (!statementSupplierId) return;
+  const days = Number($('#stm-days').value) || 90;
+  const data = await api(`/api/suppliers/${statementSupplierId}/statement?days=${days}`);
+  statementData = data;
+  $('#stm-title').textContent = t('stm.titleNamed', { name: data.supplier.name });
+  $('#stm-stats').innerHTML = `
+    <div class="stat"><span class="muted small">${esc(t('stm.invoices'))}</span><strong><bdi>${data.totals.invoices}</bdi></strong></div>
+    <div class="stat"><span class="muted small">${esc(t('stm.total'))}</span><strong>${money(data.totals.total)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('stm.paid'))}</span><strong>${money(data.totals.paid)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('stm.outstanding'))}</span><strong class="${data.totals.outstanding > 0 ? 'negative' : ''}">${money(data.totals.outstanding)}</strong></div>`;
+  const contact = [data.supplier.phone, data.supplier.email].filter(Boolean).join(' · ');
+  $('#stm-note').textContent = [
+    contact,
+    t('stm.lifetime', { total: money(data.lifetime.total), due: money(data.lifetime.outstanding) }),
+    t('stm.reversedNote'),
+  ].filter(Boolean).join(' — ');
+  $('#stm-body').innerHTML = data.purchases.length ? data.purchases.map(row => {
+    const due = Math.max(0, row.total - row.paid);
+    return `<tr class="${row.status === 'reversed' ? 'row-muted' : ''}">
+      <td class="nowrap"><bdi>${esc(fmtDateTime(row.date))}</bdi></td>
+      <td dir="auto">${esc(row.invoice_no || `#${row.id}`)}</td>
+      <td>${money(row.total)}</td>
+      <td>${money(row.paid)}</td>
+      <td class="${due > 0 && row.status === 'posted' ? 'negative' : ''}">${money(due)}</td>
+      <td><span class="status-badge ${row.status === 'reversed' ? 'voided' : paymentBadgeClass(paymentStatusFor(row.total, row.paid))}">${esc(row.status === 'reversed' ? t('pur.status.reversed') : purchasePaymentLabel(paymentStatusFor(row.total, row.paid)))}</span></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="6" class="muted">${esc(t('stm.noInvoices'))}</td></tr>`;
+}
+
+$('#stm-days').addEventListener('change', () => safeRender(loadSupplierStatement));
+
+$('#stm-export').addEventListener('click', () => {
+  const data = statementData;
+  if (!data) return;
+  const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const rows = [
+    [t('stm.title'), data.supplier.name],
+    [t('pur.colSupplier'), data.supplier.name],
+    [t('stm.period'), `${data.window.from} → ${data.window.to}`],
+    [],
+    [t('pur.colDate'), t('pur.colInvoice'), t('pur.colTotal'), t('pur.colPaid'), t('stm.due'), t('pur.colStatus')],
+    ...data.purchases.map(row => [
+      row.date, row.invoice_no || `#${row.id}`, row.total, row.paid,
+      Math.max(0, row.total - row.paid),
+      row.status === 'reversed' ? t('pur.status.reversed') : purchasePaymentLabel(paymentStatusFor(row.total, row.paid)),
+    ]),
+    [],
+    [t('stm.total'), data.totals.total],
+    [t('stm.paid'), data.totals.paid],
+    [t('stm.outstanding'), data.totals.outstanding],
+  ];
+  const csv = '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `supplier-statement-${data.supplier.id}.csv`;
+  a.click();
 });
 
 function purchaseProductOptions(selected) {

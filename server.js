@@ -170,9 +170,18 @@ function rateLimited(ip) {
   return false;
 }
 
+// SameSite=Lax is the safe default. Embedded/preview deployments that run the
+// POS inside a third-party iframe need SameSite=None, which browsers only
+// accept together with Secure.
+function sessionCookieAttributes({ maxAge = 12 * 3600 } = {}) {
+  const requested = String(process.env.POS_COOKIE_SAMESITE || 'lax').toLowerCase();
+  const sameSite = requested === 'none' ? 'None' : requested === 'strict' ? 'Strict' : 'Lax';
+  const secure = sameSite === 'None' || process.env.POS_COOKIE_SECURE !== 'false';
+  return `; HttpOnly; Path=/; SameSite=${sameSite}${secure ? '; Secure' : ''}; Max-Age=${maxAge}`;
+}
+
 function sessionCookie(token) {
-  const secure = process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure';
-  return `pos_session=${token}; HttpOnly; Path=/; SameSite=Lax${secure}; Max-Age=${12 * 3600}`;
+  return `pos_session=${token}${sessionCookieAttributes()}`;
 }
 
 let lastActivityWrite = 0;
@@ -346,7 +355,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/logout' && method === 'POST') {
     audit(req, user, 'logout', 'user', user.id, '');
     auth.deleteSession(db, auth.parseCookies(req).pos_session);
-    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=; HttpOnly; Path=/; SameSite=Lax${process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure'}; Max-Age=0` });
+    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=${sessionCookieAttributes({ maxAge: 0 })}` });
   }
   if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, subscriptionStatus: subscriptionState().status } });
   if (p === '/api/config' && method === 'GET') {
@@ -901,6 +910,40 @@ async function handleApi(req, res, url) {
       if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'A supplier with this name already exists', messageAr: 'يوجد مورد بنفس الاسم بالفعل', code: 'SUPPLIER_EXISTS' });
       throw e;
     }
+  }
+  const supplierStatementMatch = p.match(/^\/api\/suppliers\/(\d+)\/statement$/);
+  if (supplierStatementMatch && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(+supplierStatementMatch[1]);
+    if (!supplier) return sendJson(res, 404, { error: 'Supplier not found', messageAr: 'المورد غير موجود' });
+    const days = Math.min(365, Math.max(1, int(url.searchParams.get('days'), 90)));
+    const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    const purchases = db.prepare(`
+      SELECT id, date, invoice_no, subtotal, tax, total, paid, status
+      FROM purchases WHERE supplier_id = ? AND date(date) >= date(?)
+      ORDER BY date DESC, id DESC`).all(supplier.id, from);
+    const posted = purchases.filter(row => row.status === 'posted');
+    const sum = (rows, key) => round2(rows.reduce((total, row) => total + Number(row[key] || 0), 0));
+    const lifetime = db.prepare(`
+      SELECT COUNT(*) AS invoices, COALESCE(SUM(total),0) AS total, COALESCE(SUM(paid),0) AS paid
+      FROM purchases WHERE supplier_id = ? AND status = 'posted'`).get(supplier.id);
+    return sendJson(res, 200, {
+      supplier: { id: supplier.id, name: supplier.name, phone: supplier.phone, email: supplier.email, note: supplier.note, active: supplier.active },
+      window: { days, from, to: new Date().toISOString().slice(0, 10) },
+      purchases,
+      totals: {
+        invoices: posted.length,
+        total: sum(posted, 'total'),
+        paid: sum(posted, 'paid'),
+        outstanding: round2(sum(posted, 'total') - sum(posted, 'paid')),
+      },
+      lifetime: {
+        invoices: lifetime.invoices,
+        total: round2(lifetime.total),
+        paid: round2(lifetime.paid),
+        outstanding: round2(lifetime.total - lifetime.paid),
+      },
+    });
   }
   const supplierMatch = p.match(/^\/api\/suppliers\/(\d+)$/);
   if (supplierMatch) {

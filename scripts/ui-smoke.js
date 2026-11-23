@@ -186,6 +186,14 @@ async function main() {
   await wait(1400);
   check('supplier is created', /شركة النيل/.test($('#suppliers-body').textContent));
 
+  // supplier statement opens with the invoice we are about to create
+  $$('#suppliers-body [data-sup-statement]')[0].click();
+  await wait(1400);
+  check('supplier statement opens', !$('#statement-modal').hidden && /كشف حساب/.test($('#stm-title').textContent), $('#stm-title').textContent.trim());
+  check('statement explains an empty period', /لا توجد فواتير مشتريات/.test($('#stm-body').textContent), $('#stm-body').textContent.trim().slice(0, 40));
+  $('#statement-modal [data-close]').click();
+  await wait(200);
+
   const productsBefore = await (await window.fetch('/api/products')).json();
   const target = productsBefore[0];
   $('#add-purchase-btn').click();
@@ -209,6 +217,13 @@ async function main() {
   const restocked = productsAfter.find(p => p.id === target.id);
   check('purchase increases stock', restocked.stock === target.stock + 5, `${target.name}: ${target.stock} → ${restocked.stock}`);
   check('purchase sets the unit cost', Number(restocked.cost_price) === 10, `cost ${restocked.cost_price}`);
+
+  $$('#suppliers-body [data-sup-statement]')[0].click();
+  await wait(1500);
+  check('statement lists the new invoice', /INV|#|ج\.م/.test($('#stm-body').textContent) && $$('#stm-body tr').length === 1, $('#stm-body').textContent.replace(/\s+/g, ' ').trim().slice(0, 60));
+  check('statement totals the outstanding amount', $$('#stm-stats .stat').length === 4, $('#stm-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
+  $('#statement-modal [data-close]').click();
+  await wait(200);
   tab('inventory').click();
   await wait(800);
   check('inventory shows the new quantity', $$('#inv-body tr').find(r => r.textContent.includes(target.name))?.textContent.includes(String(restocked.stock)), `${restocked.stock} expected`);
