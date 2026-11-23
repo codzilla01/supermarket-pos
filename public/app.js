@@ -236,6 +236,7 @@ function relocalize() {
   if ($('#view-settings').classList.contains('active')) safeRender(renderSettings);
   if ($('#view-audit').classList.contains('active')) safeRender(renderAudit);
   if ($('#view-purchases').classList.contains('active')) safeRender(renderPurchases);
+  if ($('#view-sales').classList.contains('active')) safeRender(renderProfit);
   if ($('#view-stocktake').classList.contains('active')) safeRender(renderStocktake);
   if (importPlan) renderImportPreview(importPlan);
   if ($('#view-subscription').classList.contains('active')) renderSubscriptionStatus();
@@ -1496,6 +1497,7 @@ $('#customer-form').addEventListener('submit', async e => {
 // ---------- Sales ----------
 async function renderSales() {
   const [stats, sales, shifts] = await Promise.all([api('/api/stats'), api('/api/sales'), api('/api/shifts')]);
+  await renderProfit();
   const today = stats.today;
   $('#stats').innerHTML = `
     <div class="stat"><div class="label">${esc(t('sales.revenueToday'))}</div><div class="value"><bdi>${money(today.revenue)}</bdi></div></div>
@@ -1551,6 +1553,68 @@ async function renderSales() {
   };
 }
 $('#sales-filter').addEventListener('change', renderSales);
+
+// ---------- Profit report (admin) ----------
+let profitReport = null;
+
+const marginLabel = value => (value === null || value === undefined ? '—' : `${value.toFixed(1)}%`);
+
+async function renderProfit() {
+  const card = $('#profit-card');
+  if (!card) return;
+  if (me?.role !== 'admin') { card.hidden = true; return; }
+  card.hidden = false;
+  const days = Number($('#profit-days').value) || 7;
+  const data = await api(`/api/reports/profit?days=${days}`);
+  profitReport = data;
+  const totals = data.totals;
+  $('#profit-stats').innerHTML = `
+    <div class="stat"><span class="muted small">${esc(t('profit.revenue'))}</span><strong>${money(totals.revenue)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('profit.cost'))}</span><strong>${money(totals.cost)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('profit.profit'))}</span><strong class="${totals.profit < 0 ? 'negative' : ''}">${money(totals.profit)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('profit.margin'))}</span><strong>${marginLabel(totals.margin)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('profit.sales'))}</span><strong><bdi>${totals.sales}</bdi> · <bdi>${totals.qty}</bdi> ${esc(t('profit.units'))}</strong></div>`;
+  const notes = [t('profit.note')];
+  if (totals.unpriced_items) notes.push(t('profit.unpriced', { n: totals.unpriced_items }));
+  $('#profit-note').textContent = notes.join(' ');
+
+  $('#profit-days-body').innerHTML = data.days.length ? data.days.map(row => `<tr>
+    <td class="nowrap"><bdi>${esc(row.day)}</bdi></td>
+    <td>${money(row.revenue)}</td>
+    <td>${money(row.cost)}</td>
+    <td class="${row.profit < 0 ? 'negative' : ''}"><strong>${money(row.profit)}</strong></td>
+    <td>${marginLabel(row.margin)}</td>
+  </tr>`).join('') : `<tr><td colspan="5" class="muted">${esc(t('profit.noSales'))}</td></tr>`;
+
+  $('#profit-products-body').innerHTML = data.products.length ? data.products.map(row => `<tr>
+    <td dir="auto">${row.emoji || '📦'} ${esc(row.name)}</td>
+    <td><bdi>${row.qty}</bdi></td>
+    <td class="${row.profit < 0 ? 'negative' : ''}"><strong>${money(row.profit)}</strong></td>
+    <td>${marginLabel(row.margin)}</td>
+  </tr>`).join('') : `<tr><td colspan="4" class="muted">${esc(t('profit.noSales'))}</td></tr>`;
+}
+
+$('#profit-days').addEventListener('change', () => safeRender(renderProfit));
+
+$('#profit-export').addEventListener('click', () => {
+  const report = profitReport;
+  if (!report) return;
+  const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const rows = [
+    [t('profit.colDay'), t('profit.colRevenue'), t('profit.colCost'), t('profit.colProfit'), t('profit.colMargin'), t('profit.colSales')],
+    ...report.days.map(row => [row.day, row.revenue, row.cost, row.profit, row.margin ?? '', row.sales]),
+    [],
+    [t('profit.colProduct'), t('profit.colQty'), t('profit.colRevenue'), t('profit.colCost'), t('profit.colProfit'), t('profit.colMargin')],
+    ...report.products.map(row => [row.name, row.qty, row.revenue, row.cost, row.profit, row.margin ?? '']),
+    [],
+    [t('cart.total'), report.totals.revenue, report.totals.cost, report.totals.profit, report.totals.margin ?? '', report.totals.sales],
+  ];
+  const csv = '\uFEFF' + rows.map(r => r.map(cell).join(',')).join('\r\n') + '\r\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `freshmart-profit-${report.window.days}-days.csv`;
+  a.click();
+});
 
 async function saleAction(id, action) {
   if (!confirm(t(action === 'void' ? 'sales.voidConfirm' : 'sales.refundConfirm', { id }))) return;

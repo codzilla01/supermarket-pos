@@ -237,6 +237,48 @@
       <button class="btn ghost" id="export-btn" data-i18n="sales.export">⬇ تصدير CSV</button>
     </div>
   </div>
+  <section class="card admin-only" id="profit-card">
+    <div class="page-head" style="margin:0 0 12px">
+      <h3 data-i18n="profit.title">💰 الأرباح والهامش</h3>
+      <div class="head-actions">
+        <select id="profit-days">
+          <option value="7" selected data-i18n="profit.d7">آخر ٧ أيام</option>
+          <option value="30" data-i18n="profit.d30">آخر ٣٠ يومًا</option>
+          <option value="90" data-i18n="profit.d90">آخر ٩٠ يومًا</option>
+        </select>
+        <button class="btn ghost" id="profit-export" data-i18n="profit.export">⬇ تصدير التقرير CSV</button>
+      </div>
+    </div>
+    <div class="stat-row" id="profit-stats"></div>
+    <p class="muted small" id="profit-note"></p>
+    <div class="two-col">
+      <div>
+        <h4 class="sub-head" data-i18n="profit.byDay">📅 اليوميات</h4>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th data-i18n="profit.day">اليوم</th>
+            <th data-i18n="profit.colRevenue">المبيعات</th>
+            <th data-i18n="profit.colCost">التكلفة</th>
+            <th data-i18n="profit.colProfit">الربح</th>
+            <th data-i18n="profit.colMargin">الهامش</th>
+          </tr></thead>
+          <tbody id="profit-days-body"></tbody>
+        </table></div>
+      </div>
+      <div>
+        <h4 class="sub-head" data-i18n="profit.byProduct">🏆 الأعلى ربحًا</h4>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th data-i18n="col.product">الصنف</th>
+            <th data-i18n="profit.colQty">الكمية</th>
+            <th data-i18n="profit.colProfit">الربح</th>
+            <th data-i18n="profit.colMargin">الهامش</th>
+          </tr></thead>
+          <tbody id="profit-products-body"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </section>
   <div class="stats" id="stats"></div>
   <div class="two-col">
     <section class="card"><h3 data-i18n="sales.topProducts">🏆 الأكثر مبيعًا</h3><div id="top-products"></div></section>

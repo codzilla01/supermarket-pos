@@ -239,6 +239,25 @@ async function main() {
   await wait(1400);
   check('off-site backup explains how to enable it', /POS_BACKUP_UPLOAD_URL/.test($('#offsite-note').textContent), $('#offsite-note').textContent.trim().slice(0, 60));
 
+  // ---- profit report ----
+  tab('sales').click();
+  await wait(1600);
+  check('profit card renders its five KPIs', $$('#profit-stats .stat').length === 5, $('#profit-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 80));
+  check('profit card explains the cost source', /تكلفة الوحدة الحالية/.test($('#profit-note').textContent));
+  check('empty profit period is explained', /لا توجد مبيعات مكتملة/.test($('#profit-days-body').textContent));
+
+  const originalCreate = window.URL.createObjectURL;
+  const originalClick = window.HTMLAnchorElement.prototype.click;
+  let exportedBlob = null;
+  window.URL.createObjectURL = blob => { exportedBlob = blob; return 'blob:mock'; };
+  window.HTMLAnchorElement.prototype.click = () => {};
+  $('#profit-export').click();
+  await wait(400);
+  const exportedCsv = exportedBlob ? await exportedBlob.text() : '';
+  window.URL.createObjectURL = originalCreate;
+  window.HTMLAnchorElement.prototype.click = originalClick;
+  check('profit CSV exports headers, products and totals', /الهامش/.test(exportedCsv) && /الصنف/.test(exportedCsv), `${exportedCsv.split(/\r\n/).length} lines`);
+
   $('[data-lang-toggle]').click();
   await wait(700);
   check('English toggle switches direction', window.document.documentElement.dir === 'ltr');
@@ -246,6 +265,9 @@ async function main() {
   await wait(600);
   check('English translations cover the new views', /Import stock from Excel/.test($('#import-card h3').textContent));
   check('English tab names are translated', /Purchases/.test(tab('purchases').textContent) && /Stocktake/.test(tab('stocktake').textContent));
+  tab('sales').click();
+  await wait(1200);
+  check('English profit card is translated', /Profit & margin/.test($('#profit-card').textContent) && /Revenue \(ex-tax\)/.test($('#profit-stats').textContent), $('#profit-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 60));
 
   check('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
