@@ -497,6 +497,21 @@ test('end to end: shift, sale, void and audit trail', async () => {
   }
 });
 
+// ---------- session cookies ----------
+test('session cookies are HttpOnly, Secure and SameSite=Lax by default', async () => {
+  const login = await fetch(BASE + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'store-manager-password-2026!' }),
+  });
+  assert.equal(login.status, 200);
+  const setCookie = login.headers.get('set-cookie') || '';
+  assert.match(setCookie, /^pos_session=[^;]+; HttpOnly/);
+  assert.match(setCookie, /SameSite=Lax/);
+  assert.match(setCookie, /; Secure/);
+  assert.match(setCookie, /Max-Age=43200/);
+});
+
 // ---------- supplier statement ----------
 test('the supplier statement sums invoices, payments and what is still due', async () => {
   const supplier = await req('POST', '/api/suppliers', { name: 'مورد كشف الحساب', phone: '01001112223' });

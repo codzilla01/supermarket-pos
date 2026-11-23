@@ -170,9 +170,18 @@ function rateLimited(ip) {
   return false;
 }
 
+// SameSite=Lax is the safe default. Embedded/preview deployments that run the
+// POS inside a third-party iframe need SameSite=None, which browsers only
+// accept together with Secure.
+function sessionCookieAttributes({ maxAge = 12 * 3600 } = {}) {
+  const requested = String(process.env.POS_COOKIE_SAMESITE || 'lax').toLowerCase();
+  const sameSite = requested === 'none' ? 'None' : requested === 'strict' ? 'Strict' : 'Lax';
+  const secure = sameSite === 'None' || process.env.POS_COOKIE_SECURE !== 'false';
+  return `; HttpOnly; Path=/; SameSite=${sameSite}${secure ? '; Secure' : ''}; Max-Age=${maxAge}`;
+}
+
 function sessionCookie(token) {
-  const secure = process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure';
-  return `pos_session=${token}; HttpOnly; Path=/; SameSite=Lax${secure}; Max-Age=${12 * 3600}`;
+  return `pos_session=${token}${sessionCookieAttributes()}`;
 }
 
 let lastActivityWrite = 0;
@@ -346,7 +355,7 @@ async function handleApi(req, res, url) {
   if (p === '/api/logout' && method === 'POST') {
     audit(req, user, 'logout', 'user', user.id, '');
     auth.deleteSession(db, auth.parseCookies(req).pos_session);
-    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=; HttpOnly; Path=/; SameSite=Lax${process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure'}; Max-Age=0` });
+    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=${sessionCookieAttributes({ maxAge: 0 })}` });
   }
   if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, subscriptionStatus: subscriptionState().status } });
   if (p === '/api/config' && method === 'GET') {

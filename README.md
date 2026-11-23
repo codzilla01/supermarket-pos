@@ -66,6 +66,7 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 | `POS_DEVELOPER_USERNAME` | required | Separate developer-console account |
 | `POS_DEVELOPER_PASSWORD` | required | Developer-console secret (16+ characters) |
 | `POS_COOKIE_SECURE` | `true` | Secure session cookies; set false only for local plain HTTP |
+| `POS_COOKIE_SAMESITE` | `Lax` | `None` when the POS is embedded in a third-party iframe (e.g. a preview pane); browsers then require HTTPS |
 | `STRIPE_SECRET_KEY` | — | Optional; used only for refunds of historical Stripe card sales (new checkout is cash-only) |
 | `POS_BACKUP_ENABLED` | `true` | Set to `false` to disable the in-process backup timer |
 | `POS_BACKUP_DIR` | `./backups` next to the DB | Where gzipped snapshots are written |
@@ -91,7 +92,7 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Tests and health check
 
 ```bash
-npm test        # 46 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
+npm test        # 47 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
 npm run icons   # regenerate public/icons/*.png
 npm run test:ui # optional headless-browser smoke test (needs: npm i --no-save jsdom)
 ```
