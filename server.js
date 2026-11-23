@@ -30,6 +30,12 @@ const BACKUP_DIR = process.env.POS_BACKUP_DIR
 const BACKUP_INTERVAL_HOURS = Math.max(0.05, Number(process.env.POS_BACKUP_INTERVAL_HOURS) || 24);
 const BACKUP_KEEP = Math.max(1, Number(process.env.POS_BACKUP_KEEP) || 7);
 const IMPORT_MAX_BYTES = 3 * 1024 * 1024;
+// Encrypted off-site copies: the key never leaves the server, the upload either
+// accepts a binary PUT (object storage, presigned URL) or POST (webhook).
+const BACKUP_KEY = String(process.env.POS_BACKUP_ENCRYPTION_KEY || '');
+const BACKUP_UPLOAD_URL = String(process.env.POS_BACKUP_UPLOAD_URL || '');
+const BACKUP_UPLOAD_TOKEN = String(process.env.POS_BACKUP_UPLOAD_TOKEN || '');
+const BACKUP_UPLOAD_METHOD = String(process.env.POS_BACKUP_UPLOAD_METHOD || 'PUT').toUpperCase();
 
 if (!INITIAL_ADMIN_PASSWORD || INITIAL_ADMIN_PASSWORD.length < 16) throw new Error('Set POS_INITIAL_ADMIN_PASSWORD to a unique secret of at least 16 characters before startup');
 if (!DEVELOPER_USERNAME || !DEVELOPER_PASSWORD) throw new Error('Set POS_DEVELOPER_USERNAME and POS_DEVELOPER_PASSWORD before startup');
@@ -52,7 +58,10 @@ if (DEVELOPER_USERNAME) {
 
 // ---------- automatic backups ----------
 const backupJob = BACKUP_ENABLED
-  ? backups.startScheduler({ db, dir: BACKUP_DIR, intervalHours: BACKUP_INTERVAL_HOURS, keep: BACKUP_KEEP, getSettings, log })
+  ? backups.startScheduler({
+    db, dir: BACKUP_DIR, intervalHours: BACKUP_INTERVAL_HOURS, keep: BACKUP_KEEP, getSettings, log,
+    onBackup: () => (BACKUP_UPLOAD_URL ? runOffsiteUpload('scheduled') : undefined),
+  })
   : null;
 
 // ---------- audit trail ----------
@@ -76,6 +85,40 @@ function audit(req, user, action, entity = '', entityId = '', details = '') {
     );
   } catch (e) {
     log.error('audit write failed', { action, error: e.message });
+  }
+}
+
+const paymentStatusOf = purchase => {
+  if (!purchase.total) return 'paid';
+  if (Number(purchase.paid) >= Number(purchase.total) - 0.009) return 'paid';
+  return Number(purchase.paid) > 0 ? 'partial' : 'unpaid';
+};
+
+/** Push an encrypted snapshot to the configured endpoint and remember the outcome. */
+async function runOffsiteUpload(reason = 'manual', req = null, user = null) {
+  const result = await backups.uploadOffsite({
+    db, getSettings, passphrase: BACKUP_KEY, url: BACKUP_UPLOAD_URL,
+    token: BACKUP_UPLOAD_TOKEN, method: BACKUP_UPLOAD_METHOD, log,
+  });
+  const outcome = result.ok ? `ok:${result.bytes}` : (result.skipped ? result.reason : (result.error || 'failed'));
+  try {
+    setSettings(db, { backup_offsite_last_at: new Date().toISOString(), backup_offsite_last_result: outcome });
+  } catch (e) {
+    log.warn('could not record off-site backup status', { error: e.message });
+  }
+  if (result.ok) log.info('off-site backup uploaded', { file: result.file, bytes: result.bytes, reason });
+  else if (!result.skipped) log.warn('off-site backup failed', { error: result.error, reason });
+  if (user) audit(req, user, 'backup_uploaded', 'backup', result.file || '', { reason, outcome });
+  return result;
+}
+
+function offsiteTarget() {
+  if (!BACKUP_UPLOAD_URL) return null;
+  try {
+    const url = new URL(BACKUP_UPLOAD_URL);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '(invalid URL)';
   }
 }
 
@@ -340,9 +383,11 @@ async function handleApi(req, res, url) {
     const barcode = str(b.barcode, 30) || `9${Date.now().toString().slice(-8)}`;
     const productTax = b.taxRate == null || b.taxRate === '' ? null : num(b.taxRate, -1);
     if (productTax !== null && (productTax < 0 || productTax > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1', messageAr: 'نسبة ضريبة المنتج يجب أن تكون بين 0 و1' });
+    const productCost = b.costPrice == null || b.costPrice === '' ? null : num(b.costPrice, -1);
+    if (productCost !== null && productCost < 0) return sendJson(res, 400, { error: 'Product cost must be zero or more', messageAr: 'تكلفة المنتج يجب أن تكون صفرًا أو أكثر' });
     try {
-      const info = db.prepare('INSERT INTO products(name, category, price, unit, stock, barcode, emoji, tax_rate) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(name, str(b.category, 60) || 'General', Math.max(0, num(b.price)), str(b.unit, 20) || 'each', Math.max(0, int(b.stock)), barcode, str(b.emoji, 8) || '📦', productTax);
+      const info = db.prepare('INSERT INTO products(name, category, price, unit, stock, barcode, emoji, tax_rate, cost_price) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(name, str(b.category, 60) || 'General', Math.max(0, num(b.price)), str(b.unit, 20) || 'each', Math.max(0, int(b.stock)), barcode, str(b.emoji, 8) || '📦', productTax, productCost);
       audit(req, user, 'product_created', 'product', info.lastInsertRowid, { name, price: Math.max(0, num(b.price)), barcode });
       return sendJson(res, 201, db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
@@ -367,11 +412,13 @@ async function handleApi(req, res, url) {
         barcode: b.barcode !== undefined ? str(b.barcode, 30) || existing.barcode : existing.barcode,
         emoji: b.emoji !== undefined ? str(b.emoji, 8) || '📦' : existing.emoji,
         tax_rate: b.taxRate === undefined ? existing.tax_rate : (b.taxRate === '' || b.taxRate === null ? null : num(b.taxRate, -1)),
+        cost_price: b.costPrice === undefined ? existing.cost_price : (b.costPrice === '' || b.costPrice === null ? null : num(b.costPrice, -1)),
       };
       if (next.tax_rate !== null && (next.tax_rate < 0 || next.tax_rate > 1)) return sendJson(res, 400, { error: 'Product tax rate must be between 0 and 1', messageAr: 'نسبة ضريبة المنتج يجب أن تكون بين 0 و1' });
+      if (next.cost_price !== null && (next.cost_price < 0 || !Number.isFinite(next.cost_price))) return sendJson(res, 400, { error: 'Product cost must be zero or more', messageAr: 'تكلفة المنتج يجب أن تكون صفرًا أو أكثر' });
       try {
-        db.prepare('UPDATE products SET name=?, category=?, price=?, unit=?, stock=?, barcode=?, emoji=?, tax_rate=? WHERE id=?')
-          .run(next.name, next.category, next.price, next.unit, next.stock, next.barcode, next.emoji, next.tax_rate, id);
+        db.prepare('UPDATE products SET name=?, category=?, price=?, unit=?, stock=?, barcode=?, emoji=?, tax_rate=?, cost_price=? WHERE id=?')
+          .run(next.name, next.category, next.price, next.unit, next.stock, next.barcode, next.emoji, next.tax_rate, next.cost_price, id);
       } catch (e) {
         if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists', messageAr: 'الباركود مستخدم بالفعل' });
         throw e;
@@ -750,11 +797,294 @@ async function handleApi(req, res, url) {
       for (const x of b.sales) insS.run(x.id, x.date, x.cashier_id, x.register, x.shift_id, x.subtotal, x.discount_pct, x.discount, x.tax, x.total, x.payment, x.tendered, x.change, x.status, x.customer_id, x.points_earned, x.points_redeemed, x.payment_intent_id ?? null, x.stripe_refund_id ?? null, x.idempotency_key ?? null);
       const insI = db.prepare('INSERT INTO sale_items(id, sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       for (const x of (b.sale_items || [])) insI.run(x.id, x.sale_id, x.product_id, x.name, x.emoji, x.price, x.qty, x.line_total, x.tax_rate ?? null, x.tax ?? null);
+      // Suppliers, purchases and stocktakes are restored when the file has them;
+      // older backups (without these keys) keep working unchanged.
+      db.exec('DELETE FROM purchase_items; DELETE FROM purchases; DELETE FROM stocktakes; DELETE FROM stocktake_items; DELETE FROM suppliers;');
+      if (Array.isArray(b.suppliers)) {
+        const insSup = db.prepare('INSERT INTO suppliers(id, name, phone, email, note, active, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)');
+        for (const x of b.suppliers) insSup.run(x.id, x.name, x.phone ?? null, x.email ?? '', x.note ?? '', x.active ?? 1, x.created_at ?? new Date().toISOString());
+      }
+      if (Array.isArray(b.purchases)) {
+        const insPur = db.prepare('INSERT INTO purchases(id, date, supplier_id, invoice_no, subtotal, tax_rate, tax, total, paid, status, note, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        for (const x of b.purchases) insPur.run(x.id, x.date, x.supplier_id ?? null, x.invoice_no ?? '', x.subtotal ?? 0, x.tax_rate ?? 0, x.tax ?? 0, x.total ?? 0, x.paid ?? 0, x.status ?? 'posted', x.note ?? '', x.created_by ?? null, x.created_at ?? x.date);
+        const insPItem = db.prepare('INSERT INTO purchase_items(id, purchase_id, product_id, name, qty, unit_cost, line_total) VALUES(?, ?, ?, ?, ?, ?, ?)');
+        for (const x of (b.purchase_items || [])) insPItem.run(x.id, x.purchase_id, x.product_id ?? null, x.name, x.qty, x.unit_cost, x.line_total);
+      }
+      if (Array.isArray(b.stocktakes)) {
+        const insSt = db.prepare('INSERT INTO stocktakes(id, date, status, note, created_by, applied_at, applied_by) VALUES(?, ?, ?, ?, ?, ?, ?)');
+        for (const x of b.stocktakes) insSt.run(x.id, x.date, x.status ?? 'draft', x.note ?? '', x.created_by ?? null, x.applied_at ?? null, x.applied_by ?? null);
+        const insStItem = db.prepare('INSERT INTO stocktake_items(id, stocktake_id, product_id, name, expected, counted) VALUES(?, ?, ?, ?, ?, ?)');
+        for (const x of (b.stocktake_items || [])) insStItem.run(x.id, x.stocktake_id, x.product_id, x.name, x.expected, x.counted ?? null);
+      }
       if (b.settings) setSettings(db, b.settings);
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     audit(req, user, 'backup_imported', 'backup', '', { products: b.products.length, sales: b.sales.length });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ----- Suppliers -----
+  if (p === '/api/suppliers' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    return sendJson(res, 200, db.prepare(`
+      SELECT s.*,
+        (SELECT COUNT(*) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS purchase_count,
+        (SELECT COALESCE(SUM(p.total), 0) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS purchase_total,
+        (SELECT COALESCE(SUM(p.total - p.paid), 0) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS balance
+      FROM suppliers s ORDER BY s.active DESC, s.name`).all());
+  }
+  if (p === '/api/suppliers' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const b = await readBody(req);
+    const name = str(b.name, 120);
+    if (!name) return sendJson(res, 400, { error: 'Supplier name is required', messageAr: 'اسم المورد مطلوب' });
+    try {
+      const info = db.prepare('INSERT INTO suppliers(name, phone, email, note) VALUES(?, ?, ?, ?)')
+        .run(name, str(b.phone, 30) || null, str(b.email, 120), str(b.note, 300));
+      audit(req, user, 'supplier_created', 'supplier', info.lastInsertRowid, name);
+      return sendJson(res, 201, db.prepare('SELECT * FROM suppliers WHERE id = ?').get(info.lastInsertRowid));
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'A supplier with this name already exists', messageAr: 'يوجد مورد بنفس الاسم بالفعل', code: 'SUPPLIER_EXISTS' });
+      throw e;
+    }
+  }
+  const supplierMatch = p.match(/^\/api\/suppliers\/(\d+)$/);
+  if (supplierMatch) {
+    if (!requireAdmin(user, res)) return;
+    const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(+supplierMatch[1]);
+    if (!supplier) return sendJson(res, 404, { error: 'Supplier not found', messageAr: 'المورد غير موجود' });
+    if (method === 'PUT') {
+      const b = await readBody(req);
+      const next = {
+        name: b.name !== undefined ? str(b.name, 120) || supplier.name : supplier.name,
+        phone: b.phone !== undefined ? (str(b.phone, 30) || null) : supplier.phone,
+        email: b.email !== undefined ? str(b.email, 120) : supplier.email,
+        note: b.note !== undefined ? str(b.note, 300) : supplier.note,
+        active: b.active !== undefined ? (b.active ? 1 : 0) : supplier.active,
+      };
+      try {
+        db.prepare('UPDATE suppliers SET name = ?, phone = ?, email = ?, note = ?, active = ? WHERE id = ?')
+          .run(next.name, next.phone, next.email, next.note, next.active, supplier.id);
+      } catch (e) {
+        if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'A supplier with this name already exists', messageAr: 'يوجد مورد بنفس الاسم بالفعل' });
+        throw e;
+      }
+      audit(req, user, 'supplier_updated', 'supplier', supplier.id, { name: next.name, active: next.active });
+      return sendJson(res, 200, db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplier.id));
+    }
+    if (method === 'DELETE') {
+      db.prepare('UPDATE suppliers SET active = 0 WHERE id = ?').run(supplier.id);
+      audit(req, user, 'supplier_deactivated', 'supplier', supplier.id, supplier.name);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  // ----- Purchase invoices (stock in) -----
+  if (p === '/api/purchases' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const rows = db.prepare(`
+      SELECT p.*, s.name AS supplier_name, u.name AS created_by_name,
+        (SELECT COUNT(*) FROM purchase_items i WHERE i.purchase_id = p.id) AS item_count
+      FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id LEFT JOIN users u ON u.id = p.created_by
+      ORDER BY p.id DESC LIMIT 200`).all();
+    for (const row of rows) row.payment_status = paymentStatusOf(row);
+    return sendJson(res, 200, rows);
+  }
+  if (p === '/api/purchases' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const b = await readBody(req);
+    const rawItems = Array.isArray(b.items) ? b.items : [];
+    if (!rawItems.length) return sendJson(res, 400, { error: 'A purchase needs at least one line', messageAr: 'أضف بندًا واحدًا على الأقل للفاتورة' });
+    const supplier = b.supplierId ? db.prepare('SELECT * FROM suppliers WHERE id = ?').get(int(b.supplierId)) : null;
+    if (b.supplierId && !supplier) return sendJson(res, 400, { error: 'Supplier not found', messageAr: 'المورد غير موجود' });
+
+    const prepared = [];
+    for (const item of rawItems) {
+      const qty = int(item.qty);
+      if (!Number.isInteger(qty) || qty < 1 || qty > 1_000_000) return sendJson(res, 400, { error: 'Each quantity must be a positive whole number', messageAr: 'كل كمية يجب أن تكون عددًا صحيحًا موجبًا' });
+      const unitCost = num(item.unitCost, -1);
+      if (unitCost < 0 || !Number.isFinite(unitCost)) return sendJson(res, 400, { error: 'Each unit cost must be zero or more', messageAr: 'تكلفة الوحدة يجب أن تكون صفرًا أو أكثر' });
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(int(item.productId ?? item.id));
+      if (!product) return sendJson(res, 400, { error: `Product ${item.productId} not found`, messageAr: `المنتج ${item.productId} غير موجود` });
+      prepared.push({ product, qty, unitCost: round2(unitCost), lineTotal: round2(qty * unitCost) });
+    }
+
+    const subtotal = round2(prepared.reduce((sum, item) => sum + item.lineTotal, 0));
+    const taxRate = Math.min(1, Math.max(0, num(b.taxRate, num(getSettings(db).tax_rate, 0))));
+    const tax = round2(subtotal * taxRate);
+    const total = round2(subtotal + tax);
+    const paid = Math.min(total, Math.max(0, num(b.paid, 0)));
+
+    db.exec('BEGIN');
+    let purchaseId;
+    try {
+      const info = db.prepare(`INSERT INTO purchases(date, supplier_id, invoice_no, subtotal, tax_rate, tax, total, paid, note, created_by)
+        VALUES(COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(str(b.date, 40) || null, supplier ? supplier.id : null, str(b.invoiceNo, 60), subtotal, taxRate, tax, total, paid, str(b.note, 300), user.id);
+      purchaseId = Number(info.lastInsertRowid);
+      const insItem = db.prepare('INSERT INTO purchase_items(purchase_id, product_id, name, qty, unit_cost, line_total) VALUES(?, ?, ?, ?, ?, ?)');
+      for (const item of prepared) {
+        insItem.run(purchaseId, item.product.id, item.product.name, item.qty, item.unitCost, item.lineTotal);
+        // Moving average cost keeps margins meaningful across price changes.
+        const prevStock = Number(item.product.stock) || 0;
+        const prevCost = item.product.cost_price == null ? item.unitCost : Number(item.product.cost_price);
+        const nextStock = prevStock + item.qty;
+        const nextCost = nextStock > 0 ? (prevStock * prevCost + item.qty * item.unitCost) / nextStock : item.unitCost;
+        db.prepare('UPDATE products SET stock = stock + ?, cost_price = ? WHERE id = ?')
+          .run(item.qty, Math.round(nextCost * 10000) / 10000, item.product.id);
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    const purchase = db.prepare('SELECT * FROM purchases WHERE id = ?').get(purchaseId);
+    purchase.items = db.prepare('SELECT * FROM purchase_items WHERE purchase_id = ?').all(purchaseId);
+    purchase.supplier_name = supplier ? supplier.name : null;
+    purchase.payment_status = paymentStatusOf(purchase);
+    audit(req, user, 'purchase_created', 'purchase', purchaseId, { supplier: supplier?.name || '', invoice: purchase.invoice_no, total, items: prepared.length });
+    log.info('purchase received', { reqId: req.posRequestId, purchaseId, total, items: prepared.length });
+    return sendJson(res, 201, purchase);
+  }
+  const purchaseMatch = p.match(/^\/api\/purchases\/(\d+)(\/reverse)?$/);
+  if (purchaseMatch) {
+    if (!requireAdmin(user, res)) return;
+    const purchase = db.prepare('SELECT * FROM purchases WHERE id = ?').get(+purchaseMatch[1]);
+    if (!purchase) return sendJson(res, 404, { error: 'Purchase not found', messageAr: 'فاتورة المشتريات غير موجودة' });
+    purchase.items = db.prepare('SELECT * FROM purchase_items WHERE purchase_id = ?').all(purchase.id);
+    if (!purchaseMatch[2]) {
+      if (method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed', messageAr: 'الطريقة غير مسموحة' });
+      const supplier = purchase.supplier_id ? db.prepare('SELECT * FROM suppliers WHERE id = ?').get(purchase.supplier_id) : null;
+      purchase.supplier = supplier || null;
+      purchase.payment_status = paymentStatusOf(purchase);
+      return sendJson(res, 200, purchase);
+    }
+    if (method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed', messageAr: 'الطريقة غير مسموحة' });
+    if (purchase.status !== 'posted') return sendJson(res, 409, { error: `Purchase is already ${purchase.status}`, messageAr: 'هذه الفاتورة مُلغاة بالفعل' });
+    for (const item of purchase.items) {
+      if (!item.product_id) continue;
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id);
+      if (product && product.stock < item.qty) {
+        return sendJson(res, 409, { error: `Not enough stock to reverse ${product.name}`, messageAr: `المخزون غير كافٍ لعكس كمية ${product.name}` });
+      }
+    }
+    db.exec('BEGIN');
+    try {
+      for (const item of purchase.items) {
+        if (item.product_id) db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(item.qty, item.product_id);
+      }
+      db.prepare("UPDATE purchases SET status = 'reversed' WHERE id = ?").run(purchase.id);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    audit(req, user, 'purchase_reversed', 'purchase', purchase.id, { total: purchase.total, items: purchase.items.length });
+    return sendJson(res, 200, { ok: true, status: 'reversed' });
+  }
+
+  // ----- Stocktake -----
+  if (p === '/api/stocktakes' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    return sendJson(res, 200, db.prepare(`
+      SELECT st.*, u.name AS created_by_name,
+        (SELECT COUNT(*) FROM stocktake_items i WHERE i.stocktake_id = st.id) AS item_count,
+        (SELECT COUNT(*) FROM stocktake_items i WHERE i.stocktake_id = st.id AND i.counted IS NOT NULL) AS counted_count,
+        (SELECT COUNT(*) FROM stocktake_items i WHERE i.stocktake_id = st.id AND i.counted IS NOT NULL AND i.counted <> i.expected) AS diff_count,
+        (SELECT COALESCE(SUM(i.counted - i.expected), 0) FROM stocktake_items i WHERE i.stocktake_id = st.id AND i.counted IS NOT NULL) AS net_diff
+      FROM stocktakes st LEFT JOIN users u ON u.id = st.created_by
+      ORDER BY st.id DESC LIMIT 100`).all());
+  }
+  if (p === '/api/stocktakes' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const open = db.prepare("SELECT * FROM stocktakes WHERE status = 'draft' ORDER BY id DESC LIMIT 1").get();
+    if (open) return sendJson(res, 409, { error: 'A stocktake is already in progress', messageAr: 'يوجد جرد مفتوح بالفعل — أكمله أو ألغِه أولًا', code: 'STOCKTAKE_OPEN', stocktakeId: open.id });
+    const b = await readBody(req);
+    const products = db.prepare('SELECT id, name, stock FROM products WHERE active = 1 ORDER BY category, name').all();
+    if (!products.length) return sendJson(res, 409, { error: 'There are no active products to count', messageAr: 'لا توجد أصناف نشطة للجرد' });
+    let draftId;
+    db.exec('BEGIN');
+    try {
+      const info = db.prepare('INSERT INTO stocktakes(note, created_by) VALUES(?, ?)').run(str(b.note, 300), user.id);
+      draftId = Number(info.lastInsertRowid);
+      const insert = db.prepare('INSERT INTO stocktake_items(stocktake_id, product_id, name, expected) VALUES(?, ?, ?, ?)');
+      for (const product of products) insert.run(draftId, product.id, product.name, product.stock);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    audit(req, user, 'stocktake_started', 'stocktake', draftId, { products: products.length });
+    return sendJson(res, 201, { id: draftId, items: products.length });
+  }
+  const stocktakeMatch = p.match(/^\/api\/stocktakes\/(\d+)(\/(items|apply|cancel))?$/);
+  if (stocktakeMatch) {
+    if (!requireAdmin(user, res)) return;
+    const stocktake = db.prepare('SELECT * FROM stocktakes WHERE id = ?').get(+stocktakeMatch[1]);
+    if (!stocktake) return sendJson(res, 404, { error: 'Stocktake not found', messageAr: 'الجرد غير موجود' });
+    const action = stocktakeMatch[3];
+
+    if (!action && method === 'GET') {
+      const items = db.prepare(`
+        SELECT i.*, p.category, p.unit, p.emoji, p.stock AS current_stock, p.price
+        FROM stocktake_items i JOIN products p ON p.id = i.product_id
+        WHERE i.stocktake_id = ? ORDER BY p.category, p.name`).all(stocktake.id);
+      return sendJson(res, 200, { ...stocktake, items });
+    }
+
+    if (action === 'items' && method === 'PUT') {
+      if (stocktake.status !== 'draft') return sendJson(res, 409, { error: 'Only a draft stocktake can be edited', messageAr: 'لا يمكن التعديل إلا في جرد مفتوح' });
+      const b = await readBody(req);
+      const entries = Array.isArray(b.items) ? b.items : [];
+      const valid = new Set(db.prepare('SELECT product_id FROM stocktake_items WHERE stocktake_id = ?').all(stocktake.id).map(r => r.product_id));
+      const update = db.prepare('UPDATE stocktake_items SET counted = ? WHERE stocktake_id = ? AND product_id = ?');
+      let saved = 0;
+      for (const entry of entries) {
+        const productId = int(entry.productId);
+        if (!valid.has(productId)) continue;
+        if (entry.counted === null || entry.counted === undefined || entry.counted === '') {
+          update.run(null, stocktake.id, productId);
+          saved++;
+          continue;
+        }
+        const counted = int(entry.counted);
+        if (!Number.isInteger(counted) || counted < 0 || counted > 1_000_000) {
+          return sendJson(res, 400, { error: 'Counted quantities must be whole numbers of zero or more', messageAr: 'الكمية المعدودة يجب أن تكون عددًا صحيحًا غير سالب' });
+        }
+        update.run(counted, stocktake.id, productId);
+        saved++;
+      }
+      return sendJson(res, 200, { ok: true, saved });
+    }
+
+    if (action === 'apply' && method === 'POST') {
+      if (stocktake.status !== 'draft') return sendJson(res, 409, { error: 'This stocktake is already closed', messageAr: 'هذا الجرد مغلق بالفعل' });
+      const items = db.prepare('SELECT * FROM stocktake_items WHERE stocktake_id = ? AND counted IS NOT NULL').all(stocktake.id);
+      if (!items.length) return sendJson(res, 400, { error: 'No counted quantities to apply', messageAr: 'لم تُدخل أي كمية معدودة' });
+      let gains = 0, losses = 0, unitsIn = 0, unitsOut = 0;
+      db.exec('BEGIN');
+      try {
+        for (const item of items) {
+          const diff = item.counted - item.expected;
+          if (diff > 0) { gains++; unitsIn += diff; } else if (diff < 0) { losses++; unitsOut += -diff; }
+          db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(item.counted, item.product_id);
+        }
+        db.prepare("UPDATE stocktakes SET status = 'applied', applied_at = datetime('now'), applied_by = ? WHERE id = ?").run(user.id, stocktake.id);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+      audit(req, user, 'stocktake_applied', 'stocktake', stocktake.id, { counted: items.length, gains, losses, unitsIn, unitsOut });
+      return sendJson(res, 200, { ok: true, counted: items.length, gains, losses, unitsIn, unitsOut });
+    }
+
+    if (action === 'cancel' && method === 'POST') {
+      if (stocktake.status !== 'draft') return sendJson(res, 409, { error: 'Only a draft stocktake can be cancelled', messageAr: 'لا يمكن إلغاء إلا جرد مفتوح' });
+      db.prepare("UPDATE stocktakes SET status = 'cancelled' WHERE id = ?").run(stocktake.id);
+      audit(req, user, 'stocktake_cancelled', 'stocktake', stocktake.id, '');
+      return sendJson(res, 200, { ok: true, status: 'cancelled' });
+    }
   }
 
   // ----- Product import (Excel / CSV) -----
@@ -835,12 +1165,21 @@ async function handleApi(req, res, url) {
   // ----- Backups on disk (admin) -----
   if (p === '/api/backups' && method === 'GET') {
     if (!requireAdmin(user, res)) return;
+    const cfg = getSettings(db);
     return sendJson(res, 200, {
       enabled: BACKUP_ENABLED,
       dir: BACKUP_DIR,
       interval_hours: BACKUP_INTERVAL_HOURS,
       keep: BACKUP_KEEP,
       files: backups.listBackups(BACKUP_DIR),
+      offsite: {
+        configured: Boolean(BACKUP_UPLOAD_URL),
+        key_configured: BACKUP_KEY.length >= 16,
+        method: BACKUP_UPLOAD_METHOD,
+        target: offsiteTarget(),
+        last_at: cfg.backup_offsite_last_at || null,
+        last_result: cfg.backup_offsite_last_result || null,
+      },
     });
   }
   if (p === '/api/backups/run' && method === 'POST') {
@@ -849,6 +1188,20 @@ async function handleApi(req, res, url) {
     const pruned = backups.pruneBackups(BACKUP_DIR, BACKUP_KEEP);
     audit(req, user, 'backup_created', 'backup', info.file, `manual · ${info.bytes} bytes`);
     return sendJson(res, 200, { ok: true, file: info.file, bytes: info.bytes, exported_at: info.exported_at, pruned });
+  }
+  if (p === '/api/backups/upload' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    if (!BACKUP_UPLOAD_URL) {
+      return sendJson(res, 409, { error: 'Set POS_BACKUP_UPLOAD_URL to enable encrypted off-site copies', messageAr: 'اضبط POS_BACKUP_UPLOAD_URL لتفعيل النسخ الخارجي المشفّر', code: 'OFFSITE_NOT_CONFIGURED' });
+    }
+    if (BACKUP_KEY.length < 16) {
+      return sendJson(res, 409, { error: 'Set POS_BACKUP_ENCRYPTION_KEY (16+ characters) — uploads are always encrypted', messageAr: 'اضبط POS_BACKUP_ENCRYPTION_KEY (16 حرفًا أو أكثر) — النسخ الخارجي مشفّر دائمًا', code: 'OFFSITE_NO_KEY' });
+    }
+    const result = await runOffsiteUpload('manual', req, user);
+    if (!result.ok) {
+      return sendJson(res, 502, { error: `Upload failed: ${result.error}`, messageAr: `فشل الرفع: ${result.error}`, file: result.file });
+    }
+    return sendJson(res, 200, { ok: true, file: result.file, bytes: result.bytes, target: offsiteTarget() });
   }
 
   return sendJson(res, 404, { error: 'API route not found', messageAr: 'المسار غير موجود' });
@@ -923,6 +1276,7 @@ if (require.main === module) {
     console.log(`🛒 FreshMart POS (production) running at http://${HOST}:${PORT}`);
     console.log(`   Logs: ${log.isJson() ? 'JSON lines' : 'text'} (POS_LOG_FORMAT=json for log shippers)`);
     console.log(`   Backups: ${backupJob ? `${BACKUP_DIR} (every ${BACKUP_INTERVAL_HOURS}h, keep ${BACKUP_KEEP})` : 'disabled'}`);
+    console.log(`   Off-site encrypted copies: ${BACKUP_UPLOAD_URL ? offsiteTarget() : 'not configured'}`);
     if (DEVELOPER_USERNAME) console.log('   Developer console: enabled (credentials are configured via environment)');
     console.log('   Checkout: cash only');
     log.info('server listening', {

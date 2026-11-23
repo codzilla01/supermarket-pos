@@ -235,6 +235,8 @@ function relocalize() {
   if ($('#view-customers').classList.contains('active')) renderCustomers();
   if ($('#view-settings').classList.contains('active')) safeRender(renderSettings);
   if ($('#view-audit').classList.contains('active')) safeRender(renderAudit);
+  if ($('#view-purchases').classList.contains('active')) safeRender(renderPurchases);
+  if ($('#view-stocktake').classList.contains('active')) safeRender(renderStocktake);
   if (importPlan) renderImportPreview(importPlan);
   if ($('#view-subscription').classList.contains('active')) renderSubscriptionStatus();
   if ($('#view-developer').classList.contains('active')) renderDeveloperDashboard();
@@ -487,6 +489,8 @@ $$('.tab').forEach(btn => btn.addEventListener('click', () => {
   if (btn.dataset.view === 'subscription') safeRender(renderSubscriptionStatus);
   if (btn.dataset.view === 'developer') safeRender(renderDeveloperDashboard);
   if (btn.dataset.view === 'audit') safeRender(renderAudit);
+  if (btn.dataset.view === 'purchases') safeRender(renderPurchases);
+  if (btn.dataset.view === 'stocktake') safeRender(renderStocktake);
 }));
 
 // ---------- Shifts ----------
@@ -699,6 +703,7 @@ $('#barcode').addEventListener('keydown', e => {
 
 // ---------- Checkout ----------
 function openModal(id) { $(id).hidden = false; }
+function closeModal(id) { const el = $(id); if (el) el.hidden = true; }
 $$('[data-close]').forEach(b => b.addEventListener('click', () => b.closest('.modal-backdrop').hidden = true));
 $$('.modal-backdrop').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.hidden = true; }));
 
@@ -897,6 +902,366 @@ function renderInventory() {
   }));
 }
 
+// ---------- Suppliers & purchases ----------
+let supplierRows = [];
+let purchaseRows = [];
+
+const purchasePaymentLabel = status => t(`pur.pay.${status}`);
+const paymentBadgeClass = status => ({ paid: '', partial: 'low', unpaid: 'out' })[status] || '';
+
+async function renderPurchases() {
+  if (me?.role !== 'admin') return;
+  const [suppliers, purchases] = await Promise.all([api('/api/suppliers'), api('/api/purchases')]);
+  supplierRows = suppliers;
+  purchaseRows = purchases;
+
+  $('#suppliers-body').innerHTML = suppliers.length ? suppliers.map(s => `<tr class="${s.active ? '' : 'row-muted'}">
+    <td dir="auto"><strong>${esc(s.name)}</strong>${s.active ? '' : ` <span class="stock-badge out">${esc(t('sup.inactive'))}</span>`}</td>
+    <td dir="ltr">${esc(s.phone || '—')}</td>
+    <td><bdi>${s.purchase_count}</bdi></td>
+    <td>${money(s.balance)}</td>
+    <td><button class="icon-btn" data-sup-edit="${s.id}" title="${esc(t('sup.edit'))}">✏️</button>${s.active ? `<button class="icon-btn" data-sup-off="${s.id}" title="${esc(t('sup.deactivate'))}">🚫</button>` : ''}</td>
+  </tr>`).join('') : `<tr><td colspan="5" class="muted">${esc(t('sup.empty'))}</td></tr>`;
+
+  const posted = purchases.filter(p => p.status === 'posted');
+  const totalSpent = posted.reduce((sum, p) => sum + p.total, 0);
+  const outstanding = posted.reduce((sum, p) => sum + Math.max(0, p.total - p.paid), 0);
+  $('#purchase-stats').innerHTML = `
+    <div class="stat"><span class="muted small">${esc(t('pur.statInvoices'))}</span><strong><bdi>${posted.length}</bdi></strong></div>
+    <div class="stat"><span class="muted small">${esc(t('pur.statSpent'))}</span><strong>${money(totalSpent)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('pur.statDue'))}</span><strong>${money(outstanding)}</strong></div>`;
+
+  $('#purchases-body').innerHTML = purchases.length ? purchases.map(p => `<tr class="${p.status === 'reversed' ? 'row-muted' : ''}">
+    <td class="nowrap"><bdi>${esc(fmtDateTime(p.date))}</bdi></td>
+    <td dir="auto">${esc(p.supplier_name || '—')}</td>
+    <td dir="auto">${esc(p.invoice_no || '—')}</td>
+    <td><bdi>${p.item_count}</bdi></td>
+    <td>${money(p.total)}</td>
+    <td>${money(p.paid)}</td>
+    <td><span class="status-badge ${p.status === 'reversed' ? 'voided' : paymentBadgeClass(p.payment_status)}">${esc(p.status === 'reversed' ? t('pur.status.reversed') : purchasePaymentLabel(p.payment_status))}</span></td>
+    <td><button class="icon-btn" data-pur-view="${p.id}" title="${esc(t('pur.detailTitle'))}">👁</button></td>
+  </tr>`).join('') : `<tr><td colspan="8" class="muted">${esc(t('pur.empty'))}</td></tr>`;
+
+  $$('#suppliers-body [data-sup-edit]').forEach(b => b.addEventListener('click', () => openSupplierModal(supplierRows.find(x => x.id === +b.dataset.supEdit))));
+  $$('#suppliers-body [data-sup-off]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(t('sup.deactivateConfirm'))) return;
+    try {
+      await api(`/api/suppliers/${b.dataset.supOff}`, { method: 'DELETE' });
+      toast(t('sup.deactivated'));
+      await renderPurchases();
+    } catch (err) { toast(t('err.prefix', { message: err.message })); }
+  }));
+  $$('#purchases-body [data-pur-view]').forEach(b => b.addEventListener('click', () => openPurchaseDetail(+b.dataset.purView)));
+}
+
+function openSupplierModal(supplier = null) {
+  $('#supplier-form-title').textContent = supplier ? t('sup.edit') : t('sup.add');
+  $('#sup-id').value = supplier ? supplier.id : '';
+  $('#sup-name').value = supplier ? supplier.name : '';
+  $('#sup-phone').value = supplier ? (supplier.phone || '') : '';
+  $('#sup-email').value = supplier ? supplier.email : '';
+  $('#sup-note').value = supplier ? supplier.note : '';
+  openModal('#supplier-modal');
+  setTimeout(() => $('#sup-name').focus(), 50);
+}
+
+$('#add-supplier-btn').addEventListener('click', () => openSupplierModal());
+$('#supplier-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = $('#sup-id').value;
+  const body = { name: $('#sup-name').value.trim(), phone: $('#sup-phone').value.trim(), email: $('#sup-email').value.trim(), note: $('#sup-note').value.trim() };
+  try {
+    if (id) await api(`/api/suppliers/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    else await api('/api/suppliers', { method: 'POST', body: JSON.stringify(body) });
+    closeModal('#supplier-modal');
+    toast(t('sup.saved'));
+    await renderPurchases();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+function purchaseProductOptions(selected) {
+  return `<option value="">${esc(t('pur.pickProduct'))}</option>` +
+    products.map(p => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)} · ${esc(unitLabel(p.unit))}</option>`).join('');
+}
+
+function addPurchaseLine(preset = {}) {
+  const row = document.createElement('div');
+  row.className = 'purchase-line';
+  row.innerHTML = `
+    <select class="pl-product">${purchaseProductOptions(preset.productId)}</select>
+    <input class="pl-qty" type="number" min="1" step="1" value="${preset.qty || 1}" aria-label="${esc(t('pur.qty'))}" />
+    <input class="pl-cost" type="number" min="0" step="0.01" value="${preset.unitCost ?? ''}" placeholder="${esc(t('pur.unitCost'))}" aria-label="${esc(t('pur.unitCost'))}" />
+    <button type="button" class="icon-btn pl-remove" title="${esc(t('pur.removeLine'))}">🗑</button>`;
+  $('#pur-lines').appendChild(row);
+  const select = row.querySelector('.pl-product');
+  const qty = row.querySelector('.pl-qty');
+  const cost = row.querySelector('.pl-cost');
+  select.addEventListener('change', () => {
+    const product = products.find(p => p.id === +select.value);
+    if (product && product.cost_price != null && !cost.value) cost.value = product.cost_price;
+    if (!select.value) cost.value = '';
+    updatePurchaseTotals();
+  });
+  [qty, cost].forEach(input => input.addEventListener('input', updatePurchaseTotals));
+  row.querySelector('.pl-remove').addEventListener('click', () => {
+    if ($$('#pur-lines .purchase-line').length === 1) return;
+    row.remove();
+    updatePurchaseTotals();
+  });
+  updatePurchaseTotals();
+}
+
+function purchaseLines() {
+  return $$('#pur-lines .purchase-line').map(row => ({
+    productId: +row.querySelector('.pl-product').value,
+    qty: parseInt(row.querySelector('.pl-qty').value, 10) || 0,
+    unitCost: parseFloat(row.querySelector('.pl-cost').value) || 0,
+  }));
+}
+
+function updatePurchaseTotals() {
+  const lines = purchaseLines().filter(l => l.productId);
+  const subtotal = lines.reduce((sum, l) => sum + l.qty * l.unitCost, 0);
+  const rate = Math.min(1, Math.max(0, parseFloat($('#pur-tax').value) || 0));
+  const tax = subtotal * rate;
+  const total = subtotal + tax;
+  const paid = Math.min(total, Math.max(0, parseFloat($('#pur-paid').value) || 0));
+  const status = total === 0 || paid >= total - 0.009 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+  $('#pur-totals').innerHTML = `
+    <span>${esc(t('cart.subtotal'))}: <strong>${money(subtotal)}</strong></span>
+    <span>${esc(t('cart.tax'))}: <strong>${money(tax)}</strong></span>
+    <span>${esc(t('cart.total'))}: <strong>${money(total)}</strong></span>
+    <span class="status-badge ${paymentBadgeClass(status)}">${esc(purchasePaymentLabel(status))}</span>`;
+}
+
+function openPurchaseModal() {
+  const active = supplierRows.filter(s => s.active);
+  $('#pur-supplier').innerHTML = `<option value="">${esc(t('pur.noSupplier'))}</option>` +
+    active.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  $('#pur-invoice').value = '';
+  $('#pur-paid').value = '0';
+  $('#pur-tax').value = taxRate();
+  $('#pur-note').value = '';
+  $('#pur-lines').innerHTML = '';
+  addPurchaseLine();
+  addPurchaseLine();
+  openModal('#purchase-modal');
+  setTimeout(() => $('#pur-invoice').focus(), 50);
+  updatePurchaseTotals();
+}
+
+$('#add-purchase-btn').addEventListener('click', async () => {
+  try {
+    if (!supplierRows.length) supplierRows = await api('/api/suppliers');
+    openPurchaseModal();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+$('#pur-add-line').addEventListener('click', () => addPurchaseLine());
+$('#pur-paid').addEventListener('input', updatePurchaseTotals);
+$('#pur-tax').addEventListener('input', updatePurchaseTotals);
+
+$('#purchase-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const items = purchaseLines().filter(line => line.productId && line.qty > 0);
+  if (!items.length) { toast(t('pur.needLines')); return; }
+  try {
+    const created = await api('/api/purchases', {
+      method: 'POST',
+      body: JSON.stringify({
+        supplierId: $('#pur-supplier').value || null,
+        invoiceNo: $('#pur-invoice').value.trim(),
+        items,
+        paid: parseFloat($('#pur-paid').value) || 0,
+        taxRate: $('#pur-tax').value === '' ? undefined : parseFloat($('#pur-tax').value),
+        note: $('#pur-note').value.trim(),
+      }),
+    });
+    closeModal('#purchase-modal');
+    products = await api('/api/products');
+    scanStockAlerts(products);
+    renderCategories(); renderGrid(); renderInventory();
+    toast(t('pur.created', { id: created.id, total: money(created.total) }));
+    await renderPurchases();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+async function openPurchaseDetail(id) {
+  try {
+    const purchase = await api(`/api/purchases/${id}`);
+    $('#pur-detail-title').textContent = t('pur.detailTitleId', { id: purchase.id, invoice: purchase.invoice_no || '—' });
+    $('#pur-detail-body').innerHTML = `
+      <p class="muted small" dir="auto">${esc(purchase.supplier?.name || t('pur.noSupplier'))} · <bdi>${esc(fmtDateTime(purchase.date))}</bdi> · ${esc(t(`pur.pay.${purchase.payment_status}`))}</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th data-i18n="col.product">${esc(t('col.product'))}</th><th>${esc(t('pur.qty'))}</th><th>${esc(t('pur.unitCost'))}</th><th>${esc(t('cart.total'))}</th></tr></thead>
+        <tbody>${purchase.items.map(item => `<tr><td dir="auto">${esc(item.name)}</td><td><bdi>${item.qty}</bdi></td><td>${money(item.unit_cost)}</td><td>${money(item.line_total)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="purchase-totals">
+        <span>${esc(t('cart.subtotal'))}: <strong>${money(purchase.subtotal)}</strong></span>
+        <span>${esc(t('cart.tax'))}: <strong>${money(purchase.tax)}</strong></span>
+        <span>${esc(t('cart.total'))}: <strong>${money(purchase.total)}</strong></span>
+        <span>${esc(t('pur.colPaid'))}: <strong>${money(purchase.paid)}</strong></span>
+      </div>`;
+    $('#pur-reverse').hidden = purchase.status !== 'posted';
+    $('#pur-reverse').onclick = async () => {
+      if (!confirm(t('pur.reverseConfirm', { id: purchase.id }))) return;
+      try {
+        await api(`/api/purchases/${purchase.id}/reverse`, { method: 'POST', body: '{}' });
+        closeModal('#purchase-detail-modal');
+        products = await api('/api/products');
+        scanStockAlerts(products);
+        renderCategories(); renderGrid(); renderInventory();
+        toast(t('pur.reversed'));
+        await renderPurchases();
+      } catch (err) { toast(t('err.prefix', { message: err.message })); }
+    };
+    openModal('#purchase-detail-modal');
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+}
+
+// ---------- Stocktake ----------
+let stocktake = null;
+
+function stocktakeCountedValue(item) {
+  return item.counted === null || item.counted === undefined ? '' : String(item.counted);
+}
+
+function collectStocktakeCounts() {
+  if (!stocktake) return;
+  $$('#stk-body .stk-counted').forEach(input => {
+    const productId = +input.dataset.pid;
+    const item = stocktake.items.find(x => x.product_id === productId);
+    if (!item) return;
+    const raw = input.value.trim();
+    item.counted = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+  });
+}
+
+function renderStocktakeRows() {
+  if (!stocktake) return;
+  const search = ($('#stk-search').value || '').trim().toLowerCase();
+  const onlyDiff = $('#stk-only-diff').checked;
+  const rows = stocktake.items.filter(item => {
+    if (search && !`${item.name} ${item.category || ''}`.toLowerCase().includes(search)) return false;
+    if (onlyDiff && (item.counted === null || item.counted === undefined || item.counted === item.expected)) return false;
+    return true;
+  });
+  $('#stk-body').innerHTML = rows.map(item => {
+    const counted = item.counted;
+    const diff = counted === null || counted === undefined ? null : counted - item.expected;
+    const diffClass = diff === null || diff === 0 ? '' : diff > 0 ? 'stock-badge' : 'stock-badge out';
+    return `<tr>
+      <td dir="auto">${item.emoji || '📦'} <strong>${esc(item.name)}</strong> <span class="muted small">${esc(categoryLabel(item.category || ''))}</span></td>
+      <td><bdi>${item.expected}</bdi></td>
+      <td><input class="stk-counted" type="number" min="0" step="1" inputmode="numeric" data-pid="${item.product_id}" value="${stocktakeCountedValue(item)}" /></td>
+      <td>${diff === null ? '<span class="muted">—</span>' : `<span class="${diffClass}"><bdi>${diff > 0 ? '+' : ''}${diff}</bdi></span>`}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="4" class="muted">${esc(t('stk.noRows'))}</td></tr>`;
+  $$('#stk-body .stk-counted').forEach(input => input.addEventListener('input', () => {
+    const item = stocktake.items.find(x => x.product_id === +input.dataset.pid);
+    if (!item) return;
+    const raw = input.value.trim();
+    item.counted = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+    const diff = item.counted === null ? null : item.counted - item.expected;
+    input.closest('tr').children[3].innerHTML = diff === null
+      ? '<span class="muted">—</span>'
+      : `<span class="${diff === 0 ? '' : diff > 0 ? 'stock-badge' : 'stock-badge out'}"><bdi>${diff > 0 ? '+' : ''}${diff}</bdi></span>`;
+    updateStocktakeSummary();
+  }));
+  updateStocktakeSummary();
+}
+
+function updateStocktakeSummary() {
+  if (!stocktake) return;
+  collectStocktakeCounts();
+  const counted = stocktake.items.filter(i => i.counted !== null && i.counted !== undefined);
+  const diffs = counted.filter(i => i.counted !== i.expected);
+  const net = diffs.reduce((sum, i) => sum + (i.counted - i.expected), 0);
+  $('#stk-summary').textContent = t('stk.summary', { counted: counted.length, total: stocktake.items.length, diffs: diffs.length, net: net > 0 ? `+${net}` : net });
+}
+
+function renderStocktakeActive() {
+  const active = Boolean(stocktake && stocktake.status === 'draft');
+  $('#stk-active').hidden = !active;
+  $('#stk-apply').hidden = !active;
+  $('#stk-cancel').hidden = !active;
+  $('#stk-start').hidden = active;
+  if (!active) return;
+  $('#stk-status').textContent = t('stk.draftStatus', { id: stocktake.id });
+  renderStocktakeRows();
+}
+
+async function renderStocktake() {
+  if (me?.role !== 'admin') return;
+  // Keep unsaved counts before refreshing the list.
+  if (stocktake && stocktake.status === 'draft') collectStocktakeCounts();
+  const list = await api('/api/stocktakes');
+  $('#stk-history').innerHTML = list.length ? list.map(s => `<tr>
+    <td class="nowrap"><bdi>${esc(fmtDateTime(s.date))}</bdi></td>
+    <td><bdi>${s.item_count}</bdi></td>
+    <td><bdi>${s.counted_count}</bdi></td>
+    <td><bdi>${s.diff_count}</bdi></td>
+    <td><bdi>${s.net_diff > 0 ? '+' : ''}${s.net_diff}</bdi></td>
+    <td><span class="status-badge ${s.status === 'draft' ? 'low' : s.status === 'applied' ? '' : 'voided'}">${esc(t(`stk.status.${s.status}`))}</span></td>
+  </tr>`).join('') : `<tr><td colspan="6" class="muted">${esc(t('stk.noHistory'))}</td></tr>`;
+
+  const draft = list.find(s => s.status === 'draft');
+  stocktake = draft ? await api(`/api/stocktakes/${draft.id}`) : null;
+  renderStocktakeActive();
+  if (!draft) $('#stk-status').textContent = '';
+}
+
+$('#stk-start').addEventListener('click', async () => {
+  try {
+    await api('/api/stocktakes', { method: 'POST', body: JSON.stringify({}) });
+    toast(t('stk.started'));
+    await renderStocktake();
+  } catch (err) {
+    toast(t('err.prefix', { message: err.message }));
+    await renderStocktake();
+  }
+});
+
+$('#stk-save').addEventListener('click', async () => {
+  if (!stocktake) return;
+  collectStocktakeCounts();
+  try {
+    const payload = stocktake.items.map(item => ({ productId: item.product_id, counted: item.counted }));
+    const result = await api(`/api/stocktakes/${stocktake.id}/items`, { method: 'PUT', body: JSON.stringify({ items: payload }) });
+    toast(t('stk.saved', { n: result.saved }));
+    renderStocktakeRows();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+$('#stk-apply').addEventListener('click', async () => {
+  if (!stocktake) return;
+  collectStocktakeCounts();
+  if (!confirm(t('stk.applyConfirm', { id: stocktake.id }))) return;
+  try {
+    await api(`/api/stocktakes/${stocktake.id}/items`, {
+      method: 'PUT',
+      body: JSON.stringify({ items: stocktake.items.map(item => ({ productId: item.product_id, counted: item.counted })) }),
+    });
+    const result = await api(`/api/stocktakes/${stocktake.id}/apply`, { method: 'POST', body: '{}' });
+    products = await api('/api/products');
+    scanStockAlerts(products);
+    renderCategories(); renderGrid(); renderInventory();
+    toast(t('stk.appliedToast', { n: result.counted, gains: result.gains, losses: result.losses }));
+    await renderStocktake();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+$('#stk-cancel').addEventListener('click', async () => {
+  if (!stocktake || !confirm(t('stk.cancelConfirm'))) return;
+  try {
+    await api(`/api/stocktakes/${stocktake.id}/cancel`, { method: 'POST', body: '{}' });
+    toast(t('stk.cancelled'));
+    await renderStocktake();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
+
+$('#stk-search').addEventListener('input', () => { collectStocktakeCounts(); renderStocktakeRows(); });
+$('#stk-only-diff').addEventListener('change', () => { collectStocktakeCounts(); renderStocktakeRows(); });
+
 // ---------- Inventory import (Excel / CSV) ----------
 let importPlan = null;
 const IMPORT_FIELD_LABELS = { name: 'col.product', price: 'col.price', stock: 'col.stock', category: 'col.category', unit: 'col.unit', tax_rate: 'receipt.tax' };
@@ -1059,6 +1424,7 @@ function openProductForm(p) {
   $('#f-emoji').value = p ? (p.emoji || '📦') : '📦';
   $('#f-barcode').value = p ? p.barcode : '';
   $('#f-tax-rate').value = p && p.tax_rate != null ? p.tax_rate : '';
+  $('#f-cost').value = p && p.cost_price != null ? p.cost_price : '';
   $('#cat-list').innerHTML = categories().filter(c => c !== 'All').map(c => `<option value="${esc(categoryLabel(c))}">`).join('');
   openModal('#product-modal');
 }
@@ -1077,7 +1443,7 @@ $('#product-form').addEventListener('submit', async e => {
   e.preventDefault();
   const id = $('#f-id').value;
   // Submit canonical English values so category filters, reports and CSV exports stay consistent.
-  const body = { name: $('#f-name').value, category: I18N.categoryCanonical($('#f-category').value), price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: unitCanonical($('#f-unit').value), emoji: $('#f-emoji').value, barcode: $('#f-barcode').value, taxRate: $('#f-tax-rate').value };
+  const body = { name: $('#f-name').value, category: I18N.categoryCanonical($('#f-category').value), price: parseFloat($('#f-price').value), stock: parseInt($('#f-stock').value), unit: unitCanonical($('#f-unit').value), emoji: $('#f-emoji').value, barcode: $('#f-barcode').value, taxRate: $('#f-tax-rate').value, costPrice: $('#f-cost').value };
   try {
     if (id) await api(`/api/products/${id}`, { method: 'PUT', body: JSON.stringify(body) });
     else await api('/api/products', { method: 'POST', body: JSON.stringify(body) });
@@ -1228,6 +1594,7 @@ async function renderBackups() {
     note.textContent = data.enabled
       ? t('set.autobackupNote', { hours: data.interval_hours, keep: data.keep, dir: data.dir })
       : t('set.backupsDisabled');
+    renderOffsite(data.offsite);
     $('#backups-list').innerHTML = data.files.length
       ? data.files.map(f => `<li><bdi>${esc(f.file)}</bdi> <span class="muted small">${esc(fmtDateTime(f.created_at))} · <bdi>${(f.bytes / 1024).toFixed(1)} KB</bdi></span></li>`).join('')
       : `<li class="muted small">${esc(t('set.noBackups'))}</li>`;
@@ -1235,6 +1602,42 @@ async function renderBackups() {
     note.textContent = t('err.prefix', { message: err.message });
   }
 }
+
+function renderOffsite(offsite) {
+  const note = $('#offsite-note');
+  const button = $('#offsite-upload');
+  if (!offsite) { note.textContent = ''; button.hidden = true; return; }
+  if (!offsite.configured) {
+    note.textContent = t('set.offsiteOff');
+    button.hidden = true;
+    return;
+  }
+  button.hidden = !offsite.key_configured;
+  const last = offsite.last_at
+    ? t('set.offsiteLast', { time: fmtDateTime(offsite.last_at), result: offsite.last_result || '—' })
+    : t('set.offsiteNever');
+  note.textContent = offsite.key_configured
+    ? `${t('set.offsiteOn', { target: offsite.target || '—' })} · ${last}`
+    : t('set.offsiteKeyMissing');
+}
+
+$('#offsite-upload').addEventListener('click', async () => {
+  const button = $('#offsite-upload');
+  button.disabled = true;
+  const note = $('#offsite-note');
+  const previous = note.textContent;
+  note.textContent = t('set.offsiteUploading');
+  try {
+    const result = await api('/api/backups/upload', { method: 'POST', body: '{}' });
+    toast(t('set.offsiteDone', { file: result.file, bytes: `${(result.bytes / 1024).toFixed(1)} KB` }));
+  } catch (err) {
+    toast(t('err.prefix', { message: err.message }));
+    note.textContent = previous;
+  } finally {
+    button.disabled = false;
+    await renderBackups();
+  }
+});
 
 $('#backup-run').addEventListener('click', async () => {
   const btn = $('#backup-run');

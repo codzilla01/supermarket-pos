@@ -231,6 +231,33 @@ tr:last-child td { border-bottom: none; }
 .status-badge.error { background: #fee2e2; color: #dc2626; }
 .import-card #import-apply { margin-top: 14px; }
 
+/* ---------- Purchases, suppliers, stocktake ---------- */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.stat-row .stat { box-shadow: none; padding: 12px; }
+.stat-row .stat strong { display: block; font-size: 20px; margin-top: 4px; }
+.modal-wide { max-width: 780px; width: 100%; }
+.sub-head { font-size: 14px; margin: 14px 0 8px; }
+.purchase-line { display: grid; grid-template-columns: 2fr 90px 120px 40px; gap: 8px; margin-bottom: 8px; align-items: center; }
+.purchase-line select, .purchase-line input {
+  width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; color: var(--ink); background: var(--card);
+}
+.purchase-line .pl-qty, .purchase-line .pl-cost { direction: ltr; text-align: start; }
+.purchase-totals {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 12px 0;
+  padding: 10px 12px; background: #f9fafb; border: 1px solid var(--border); border-radius: 10px; font-size: 13px;
+}
+.purchase-totals strong { unicode-bidi: isolate; }
+.row-muted { opacity: .6; }
+#stk-body .stk-counted { width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.status-badge.low { background: #fef3c7; color: #b45309; }
+.status-badge.out { background: #fee2e2; color: #dc2626; }
+.btn.danger { background: #fee2e2; color: #b91c1c; }
+.btn.danger:hover { background: #fecaca; }
+@media (max-width: 640px) {
+  .purchase-line { grid-template-columns: 1fr 70px 90px 36px; }
+}
+
 /* ---------- Audit log ---------- */
 #view-audit .head-actions { flex-wrap: wrap; }
 #view-audit input#audit-search { min-width: 220px; }
