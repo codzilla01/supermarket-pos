@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/api.test.js test/i18n.test.js"
+    "test": "node --test test/api.test.js test/i18n.test.js test/features.test.js",
+    "icons": "node scripts/make-icons.js",
+    "test:ui": "node scripts/ui-smoke.js"
   },
   "engines": {
     "node": ">=22"

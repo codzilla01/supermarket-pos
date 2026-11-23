@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>FreshMart — نقاط بيع السوبر ماركت</title>
 <link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png" />
+<meta name="theme-color" content="#16a34a" />
 <link rel="stylesheet" href="styles.css" />
 <script src="i18n.js"></script>
 </head>
@@ -59,6 +63,7 @@
     <button class="tab" data-view="sales" data-i18n="nav.sales">📊 المبيعات</button>
     <button class="tab" data-view="customers" data-i18n="nav.customers">👥 العملاء</button>
     <button class="tab admin-only" data-view="settings" data-i18n="nav.settings">⚙️ الإعدادات</button>
+    <button class="tab admin-only" data-view="audit" data-i18n="nav.audit">🗂️ السجل</button>
     <button class="tab subscription-tab" data-view="subscription" data-i18n="nav.subscription">💳 الاشتراك</button>
     <button class="tab developer-only" data-view="developer" data-i18n="nav.developer">🛡️ لوحة المطوّر</button>
   </nav>
@@ -134,6 +139,39 @@
     <thead><tr><th></th><th data-i18n="col.product">المنتج</th><th data-i18n="col.category">القسم</th><th data-i18n="col.barcode">الباركود</th><th data-i18n="col.price">السعر</th><th data-i18n="col.unit">الوحدة</th><th data-i18n="col.stock">المخزون</th><th class="admin-only"></th></tr></thead>
     <tbody id="inv-body"></tbody>
   </table></div>
+
+  <section class="card import-card admin-only" id="import-card">
+    <h3 data-i18n="imp.title">📤 رفع أصناف المخزون من ملف Excel</h3>
+    <p class="muted small" data-i18n="imp.lead">ارفع ملف ‎.xlsx أو ‎.csv يحتوي الأصناف (الاسم، السعر، المخزون، الباركود، القسم، الوحدة، الضريبة). تظهر معاينة كاملة قبل الحفظ، ولا يُحفظ أي صنف قبل تأكيدك.</p>
+    <div class="import-controls">
+      <label class="btn primary file-label">
+        <span data-i18n="imp.choose">📄 اختر ملف Excel أو CSV</span>
+        <input type="file" id="import-file" accept=".xlsx,.xlsm,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
+      </label>
+      <a class="btn ghost" href="/api/products/import/template" download data-i18n="imp.template">⬇ تنزيل القالب (CSV)</a>
+      <label class="inline-check"><input type="checkbox" id="import-update" checked /> <span data-i18n="imp.updateExisting">تحديث الأصناف الموجودة (مطابقة بالباركود ثم الاسم)</span></label>
+    </div>
+    <p class="muted small" id="import-status" aria-live="polite"></p>
+    <div id="import-preview" hidden>
+      <p class="import-summary" id="import-summary"></p>
+      <div class="table-wrap import-table">
+        <table>
+          <thead><tr>
+            <th data-i18n="imp.colLine">سطر</th>
+            <th data-i18n="imp.colStatus">الحالة</th>
+            <th data-i18n="col.product">المنتج</th>
+            <th data-i18n="col.price">السعر</th>
+            <th data-i18n="col.unit">الوحدة</th>
+            <th data-i18n="col.stock">المخزون</th>
+            <th data-i18n="col.barcode">الباركود</th>
+            <th data-i18n="imp.colNote">ملاحظة</th>
+          </tr></thead>
+          <tbody id="import-body"></tbody>
+        </table>
+      </div>
+      <button class="btn primary" id="import-apply" hidden data-i18n="imp.apply">✅ تأكيد الاستيراد</button>
+    </div>
+  </section>
 </main>
 
 <!-- ============ SALES VIEW ============ -->
@@ -220,6 +258,12 @@
         <button class="btn ghost" id="backup-export" data-i18n="set.exportBackup">⬇ تصدير نسخة احتياطية (JSON)</button>
         <label class="btn ghost file-label"><span data-i18n="set.importBackup">⬆ استيراد نسخة احتياطية</span><input type="file" id="backup-import" accept=".json" hidden /></label>
       </div>
+      <h3 style="margin-top:24px" data-i18n="set.autobackup">🗄️ نسخ احتياطي تلقائي على الخادم</h3>
+      <p class="muted small" id="backup-note"></p>
+      <div class="head-actions">
+        <button class="btn ghost" id="backup-run" data-i18n="set.backupRun">＋ إنشاء نسخة الآن</button>
+      </div>
+      <ul class="backup-list" id="backups-list"></ul>
     </section>
   </div>
   <section class="card"><h3 data-i18n="set.users">👤 المستخدمون والأدوار</h3>
@@ -235,6 +279,29 @@
       <button class="btn primary" type="submit" data-i18n="set.addUser">＋ إضافة مستخدم</button>
     </form>
   </section>
+</main>
+
+<!-- ============ AUDIT LOG ============ -->
+<main id="view-audit" class="view">
+  <div class="page-head">
+    <h2><span data-i18n="audit.title">🗂️ سجل العمليات</span> <span class="muted" id="audit-count"></span></h2>
+    <div class="head-actions">
+      <select id="audit-action"><option value="" data-i18n="audit.allActions">كل العمليات</option></select>
+      <input id="audit-search" data-i18n-placeholder="audit.searchPlaceholder" placeholder="بحث في المنفّذ أو التفاصيل…" />
+      <button class="btn ghost" id="audit-refresh" data-i18n="audit.refresh">↻ تحديث</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr>
+      <th data-i18n="audit.colTime">الوقت</th>
+      <th data-i18n="audit.colActor">المنفّذ</th>
+      <th data-i18n="audit.colAction">العملية</th>
+      <th data-i18n="audit.colDetails">التفاصيل</th>
+      <th data-i18n="audit.colIp">العنوان</th>
+    </tr></thead>
+    <tbody id="audit-body"></tbody>
+  </table></div>
+  <p class="empty" id="audit-empty" hidden data-i18n="audit.empty">لا توجد عمليات مسجّلة بعد.</p>
 </main>
 
 <!-- ============ SUBSCRIPTION STATUS ============ -->
