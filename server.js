@@ -7,8 +7,13 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { openDb, seed, getSettings, setSettings, SEED_PRODUCTS } = require('./db');
 const auth = require('./auth');
+const log = require('./lib/log');
+const backups = require('./lib/backup');
+const { readTable } = require('./lib/spreadsheet');
+const { planImport, applyImport } = require('./lib/product-import');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -18,6 +23,13 @@ const DEVELOPER_USERNAME = String(process.env.POS_DEVELOPER_USERNAME || '').trim
 const DEVELOPER_PASSWORD = String(process.env.POS_DEVELOPER_PASSWORD || '');
 const INITIAL_ADMIN_PASSWORD = String(process.env.POS_INITIAL_ADMIN_PASSWORD || '');
 const MIN_PASSWORD_LENGTH = 12;
+const BACKUP_ENABLED = !['0', 'false', 'no', 'off'].includes(String(process.env.POS_BACKUP_ENABLED || 'true').toLowerCase());
+const BACKUP_DIR = process.env.POS_BACKUP_DIR
+  ? path.resolve(process.env.POS_BACKUP_DIR)
+  : path.join(process.env.POS_DB_PATH ? path.dirname(path.resolve(process.env.POS_DB_PATH)) : __dirname, 'backups');
+const BACKUP_INTERVAL_HOURS = Math.max(0.05, Number(process.env.POS_BACKUP_INTERVAL_HOURS) || 24);
+const BACKUP_KEEP = Math.max(1, Number(process.env.POS_BACKUP_KEEP) || 7);
+const IMPORT_MAX_BYTES = 3 * 1024 * 1024;
 
 if (!INITIAL_ADMIN_PASSWORD || INITIAL_ADMIN_PASSWORD.length < 16) throw new Error('Set POS_INITIAL_ADMIN_PASSWORD to a unique secret of at least 16 characters before startup');
 if (!DEVELOPER_USERNAME || !DEVELOPER_PASSWORD) throw new Error('Set POS_DEVELOPER_USERNAME and POS_DEVELOPER_PASSWORD before startup');
@@ -36,6 +48,35 @@ if (DEVELOPER_USERNAME) {
   }
   db.prepare("UPDATE users SET active = 0 WHERE role = 'developer' AND username != ?").run(DEVELOPER_USERNAME);
   db.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'developer' AND active = 0)").run();
+}
+
+// ---------- automatic backups ----------
+const backupJob = BACKUP_ENABLED
+  ? backups.startScheduler({ db, dir: BACKUP_DIR, intervalHours: BACKUP_INTERVAL_HOURS, keep: BACKUP_KEEP, getSettings, log })
+  : null;
+
+// ---------- audit trail ----------
+/**
+ * Record one sensitive operation. Never throws: an audit write must not break
+ * a sale, but a failure is logged loudly.
+ */
+function audit(req, user, action, entity = '', entityId = '', details = '') {
+  try {
+    db.prepare(`INSERT INTO audit_log(request_id, actor_id, actor, role, action, entity, entity_id, details, ip)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      String(req?.posRequestId || '').slice(0, 60),
+      user?.id ?? null,
+      String(user?.username || 'system').slice(0, 60),
+      String(user?.role || '').slice(0, 20),
+      String(action).slice(0, 60),
+      String(entity || '').slice(0, 40),
+      String(entityId ?? '').slice(0, 40),
+      (typeof details === 'string' ? details : JSON.stringify(details ?? '')).slice(0, 500),
+      String(req?.posIp || '').slice(0, 60),
+    );
+  } catch (e) {
+    log.error('audit write failed', { action, error: e.message });
+  }
 }
 
 // ---------- helpers ----------
@@ -96,6 +137,7 @@ function requireAuth(req, res) {
   const token = auth.parseCookies(req).pos_session;
   const user = auth.getSessionUser(db, token);
   if (!user) { sendJson(res, 401, { error: 'Not authenticated', messageAr: 'يجب تسجيل الدخول' }); return null; }
+  req.posUser = user;
   if (Date.now() - lastActivityWrite > 60_000) {
     const now = new Date().toISOString();
     db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(now, now);
@@ -142,6 +184,23 @@ const str = (v, max = 200) => String(v ?? '').trim().slice(0, max);
 const registerFor = req => str(req.headers['x-pos-register'], 60) || getSettings(db).register_name;
 const round2 = n => Math.round(n * 100) / 100;
 
+/** Decode an uploaded spreadsheet from the JSON payload into rows. */
+function readUpload(body) {
+  const filename = str(body.filename, 140);
+  const encoded = typeof body.contentBase64 === 'string' ? body.contentBase64 : '';
+  if (!encoded) return { code: 'NO_FILE' };
+  if (encoded.length > IMPORT_MAX_BYTES * 1.4) return { code: 'TOO_LARGE' };
+  let buffer;
+  try { buffer = Buffer.from(encoded, 'base64'); } catch { return { code: 'BAD_FILE' }; }
+  if (!buffer.length) return { code: 'BAD_FILE' };
+  if (buffer.length > IMPORT_MAX_BYTES) return { code: 'TOO_LARGE' };
+  try {
+    return { ...readTable(buffer, filename), filename };
+  } catch (e) {
+    return { code: e.message === 'EMPTY_WORKBOOK' ? 'EMPTY_SHEET' : 'BAD_FILE' };
+  }
+}
+
 // ---------- Stripe (legacy card refunds only; new checkout is cash-only) ----------
 async function stripeRequest(url, options = {}) {
   const res = await fetch(url, {
@@ -181,11 +240,14 @@ async function handleApi(req, res, url) {
     const b = await readBody(req);
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(str(b.username, 50));
     if (!user || !user.active || !auth.verifyPassword(b.password || '', user.password_hash)) {
+      audit(req, user && user.active ? user : null, 'login_failed', 'user', str(b.username, 50), user ? 'wrong password' : 'unknown user');
       return sendJson(res, 401, { error: 'Invalid username or password', messageAr: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
     }
     const token = auth.createSession(db, user.id);
     db.prepare('UPDATE subscriptions SET last_activity_at = ?, updated_at = ? WHERE id = 1').run(new Date().toISOString(), new Date().toISOString());
     logSubscriptionEvent('login', `Successful sign-in: ${user.username}`, user.username);
+    req.posUser = user;
+    audit(req, user, 'login', 'user', user.id, `role=${user.role}`);
     return sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, subscriptionStatus: subscriptionState().status } },
       { 'Set-Cookie': sessionCookie(token) });
   }
@@ -239,6 +301,7 @@ async function handleApi(req, res, url) {
   }
 
   if (p === '/api/logout' && method === 'POST') {
+    audit(req, user, 'logout', 'user', user.id, '');
     auth.deleteSession(db, auth.parseCookies(req).pos_session);
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=; HttpOnly; Path=/; SameSite=Lax${process.env.POS_COOKIE_SECURE === 'false' ? '' : '; Secure'}; Max-Age=0` });
   }
@@ -263,6 +326,7 @@ async function handleApi(req, res, url) {
         reactivated++;
       }
     }
+    audit(req, user, 'products_defaults_restored', 'product', '', { added, reactivated });
     return sendJson(res, 200, { added, reactivated, defaults: SEED_PRODUCTS.length });
   }
   if (p === '/api/products' && method === 'GET') {
@@ -279,6 +343,7 @@ async function handleApi(req, res, url) {
     try {
       const info = db.prepare('INSERT INTO products(name, category, price, unit, stock, barcode, emoji, tax_rate) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
         .run(name, str(b.category, 60) || 'General', Math.max(0, num(b.price)), str(b.unit, 20) || 'each', Math.max(0, int(b.stock)), barcode, str(b.emoji, 8) || '📦', productTax);
+      audit(req, user, 'product_created', 'product', info.lastInsertRowid, { name, price: Math.max(0, num(b.price)), barcode });
       return sendJson(res, 201, db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
       if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists', messageAr: 'الباركود مستخدم بالفعل' });
@@ -311,11 +376,13 @@ async function handleApi(req, res, url) {
         if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Barcode already exists', messageAr: 'الباركود مستخدم بالفعل' });
         throw e;
       }
+      audit(req, user, 'product_updated', 'product', id, { name: next.name, price: next.price, stock: next.stock, barcode: next.barcode });
       return sendJson(res, 200, db.prepare('SELECT * FROM products WHERE id = ?').get(id));
     }
     if (method === 'DELETE') {
       if (!requireAdmin(user, res)) return;
       db.prepare('UPDATE products SET active = 0 WHERE id = ?').run(id);
+      audit(req, user, 'product_deleted', 'product', id, existing.name);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -363,6 +430,7 @@ async function handleApi(req, res, url) {
     const b = await readBody(req);
     const info = db.prepare('INSERT INTO shifts(cashier_id, register, opening_float) VALUES(?, ?, ?)')
       .run(user.id, register, Math.max(0, num(b.openingFloat)));
+    audit(req, user, 'shift_opened', 'shift', info.lastInsertRowid, `register=${register} float=${Math.max(0, num(b.openingFloat))}`);
     return sendJson(res, 201, db.prepare('SELECT * FROM shifts WHERE id = ?').get(info.lastInsertRowid));
   }
   if (p === '/api/shifts/close' && method === 'POST') {
@@ -373,6 +441,7 @@ async function handleApi(req, res, url) {
     const cashSales = db.prepare("SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE shift_id = ? AND payment = 'cash' AND status = 'completed'").get(shift.id).s;
     const expected = round2(shift.opening_float + cashSales);
     db.prepare("UPDATE shifts SET status='closed', closed_at=datetime('now'), closing_amount=?, expected_cash=? WHERE id=?").run(closing, expected, shift.id);
+    audit(req, user, 'shift_closed', 'shift', shift.id, { register: shift.register, expected, closing, variance: round2(closing - expected) });
     return sendJson(res, 200, { shift: db.prepare('SELECT * FROM shifts WHERE id = ?').get(shift.id), variance: round2(closing - expected) });
   }
 
@@ -527,6 +596,7 @@ async function handleApi(req, res, url) {
       const finalStatus = stripeRefund && stripeRefund.status !== 'succeeded' ? 'refund_pending' : (saleAction[2] === 'void' ? 'voided' : 'refunded');
       db.prepare('UPDATE sales SET status = ?, stripe_refund_id = ? WHERE id = ?').run(finalStatus, stripeRefund?.id ?? null, sale.id);
       db.exec('COMMIT');
+      audit(req, user, saleAction[2] === 'void' ? 'sale_voided' : 'sale_refunded', 'sale', sale.id, { total: sale.total, payment: sale.payment, status: finalStatus });
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     return sendJson(res, 200, { ok: true, status: stripeRefund && stripeRefund.status !== 'succeeded' ? 'refund_pending' : (saleAction[2] === 'void' ? 'voided' : 'refunded'), providerRefundId: stripeRefund?.id ?? null });
   }
@@ -572,6 +642,7 @@ async function handleApi(req, res, url) {
     try {
       const info = db.prepare('INSERT INTO users(username, password_hash, role, name, must_change_password) VALUES(?, ?, ?, ?, 1)')
         .run(username, auth.hashPassword(password), b.role === 'admin' ? 'admin' : 'cashier', str(b.name, 120) || username);
+      audit(req, user, 'user_created', 'user', info.lastInsertRowid, `username=${username} role=${b.role === 'admin' ? 'admin' : 'cashier'}`);
       return sendJson(res, 201, db.prepare('SELECT id, username, role, name, active FROM users WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
       if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Username already exists', messageAr: 'اسم المستخدم موجود بالفعل' });
@@ -600,11 +671,13 @@ async function handleApi(req, res, url) {
       } else {
         db.prepare('UPDATE users SET role=?, name=?, active=? WHERE id=?').run(next.role, next.name, next.active, target.id);
       }
+      audit(req, user, 'user_updated', 'user', target.id, { role: next.role, active: next.active, passwordChanged: !!b.password });
       return sendJson(res, 200, db.prepare('SELECT id, username, role, name, active FROM users WHERE id = ?').get(target.id));
     }
     if (method === 'DELETE') {
       if (target.id === user.id) return sendJson(res, 400, { error: 'You cannot delete yourself', messageAr: 'لا يمكنك حذف حسابك' });
       db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(target.id);
+      audit(req, user, 'user_deactivated', 'user', target.id, target.username);
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -615,6 +688,7 @@ async function handleApi(req, res, url) {
     if (String(b.next || '').length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `New password min. ${MIN_PASSWORD_LENGTH} characters`, messageAr: `كلمة المرور الجديدة ${MIN_PASSWORD_LENGTH} حرفًا على الأقل` });
     db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(auth.hashPassword(b.next), user.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(user.id, auth.parseCookies(req).pos_session || '');
+    audit(req, user, 'password_changed', 'user', user.id, 'self-service');
     return sendJson(res, 200, { ok: true });
   }
 
@@ -635,6 +709,7 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { error: 'Currency code must be USD, EUR, GBP, or EGP', messageAr: 'كود العملة يجب أن يكون USD أو EUR أو GBP أو EGP' });
     }
     setSettings(db, obj);
+    audit(req, user, 'settings_updated', 'settings', '', Object.keys(obj));
     return sendJson(res, 200, getSettings(db));
   }
 
@@ -678,7 +753,102 @@ async function handleApi(req, res, url) {
       if (b.settings) setSettings(db, b.settings);
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
+    audit(req, user, 'backup_imported', 'backup', '', { products: b.products.length, sales: b.sales.length });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ----- Product import (Excel / CSV) -----
+  if (p === '/api/products/import/template' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const csv = '\uFEFF' + [
+      'اسم المنتج,القسم,السعر,الوحدة,المخزون,الباركود,الضريبة,الرمز',
+      'أرز مصري 1 كجم,بقالة,28.5,كجم,50,6001234567890,14,🍚',
+      'شاي 100 فتلة,مشروبات,65,عبوة,30,,14,🍵',
+    ].join('\r\n') + '\r\n';
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="products-template.csv"',
+      'Cache-Control': 'no-store',
+    });
+    return res.end(csv);
+  }
+  if ((p === '/api/products/import/preview' || p === '/api/products/import') && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const body = await readBody(req);
+    const upload = readUpload(body);
+    if (upload.code) {
+      const messages = {
+        NO_FILE: ['No file uploaded', 'لم يتم اختيار ملف'],
+        TOO_LARGE: [`File is larger than ${Math.round(IMPORT_MAX_BYTES / 1024 / 1024)} MB`, 'حجم الملف أكبر من الحد المسموح (٣ ميجابايت)'],
+        BAD_FILE: ['The file is not a readable .xlsx or .csv', 'الملف ليس ملف Excel (.xlsx) أو CSV صالحًا'],
+        EMPTY_SHEET: ['The sheet has no data rows', 'الورقة لا تحتوي على بيانات'],
+      };
+      const [error, messageAr] = messages[upload.code] || messages.BAD_FILE;
+      return sendJson(res, 400, { error, messageAr, code: upload.code });
+    }
+    const existing = db.prepare('SELECT * FROM products').all();
+    const plan = planImport(upload.rows, existing, { updateExisting: body.updateExisting !== false });
+    if (!plan.ok) {
+      return sendJson(res, 422, {
+        error: 'No header row with a product name and price column was found',
+        messageAr: 'لم يتم العثور على صف رؤوس أعمدة يحتوي على اسم المنتج والسعر',
+        code: plan.code,
+      });
+    }
+    if (p.endsWith('/preview')) {
+      return sendJson(res, 200, {
+        ok: true,
+        format: upload.format,
+        sheet: upload.sheetName,
+        filename: upload.filename,
+        headerLine: plan.headerLine,
+        columns: plan.columns,
+        entries: plan.entries.slice(0, 1000),
+        summary: plan.summary,
+        truncated: plan.entries.length > 1000,
+      });
+    }
+    const result = applyImport(db, plan);
+    audit(req, user, 'products_imported', 'product', '', { file: upload.filename, format: upload.format, ...result, total: plan.summary.total });
+    log.info('products imported', { reqId: req.posRequestId, ...result, file: upload.filename });
+    return sendJson(res, 200, { ok: true, ...result, summary: plan.summary });
+  }
+
+  // ----- Audit trail (admin) -----
+  if (p === '/api/audit' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const limit = Math.min(500, Math.max(1, int(url.searchParams.get('limit'), 100)));
+    const action = str(url.searchParams.get('action'), 60);
+    const q = str(url.searchParams.get('q'), 80);
+    const where = [];
+    const args = [];
+    if (action) { where.push('action = ?'); args.push(action); }
+    if (q) { where.push('(actor LIKE ? OR details LIKE ? OR entity_id LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+    const entries = db.prepare(`SELECT * FROM audit_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT ?`).all(...args, limit);
+    return sendJson(res, 200, {
+      entries,
+      total: db.prepare('SELECT COUNT(*) AS c FROM audit_log').get().c,
+      actions: db.prepare('SELECT action, COUNT(*) AS c FROM audit_log GROUP BY action ORDER BY c DESC').all(),
+    });
+  }
+
+  // ----- Backups on disk (admin) -----
+  if (p === '/api/backups' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    return sendJson(res, 200, {
+      enabled: BACKUP_ENABLED,
+      dir: BACKUP_DIR,
+      interval_hours: BACKUP_INTERVAL_HOURS,
+      keep: BACKUP_KEEP,
+      files: backups.listBackups(BACKUP_DIR),
+    });
+  }
+  if (p === '/api/backups/run' && method === 'POST') {
+    if (!requireAdmin(user, res)) return;
+    const info = backups.createBackup(db, BACKUP_DIR, getSettings);
+    const pruned = backups.pruneBackups(BACKUP_DIR, BACKUP_KEEP);
+    audit(req, user, 'backup_created', 'backup', info.file, `manual · ${info.bytes} bytes`);
+    return sendJson(res, 200, { ok: true, file: info.file, bytes: info.bytes, exported_at: info.exported_at, pruned });
   }
 
   return sendJson(res, 404, { error: 'API route not found', messageAr: 'المسار غير موجود' });
@@ -686,8 +856,22 @@ async function handleApi(req, res, url) {
 
 // ---------- Server ----------
 const server = http.createServer(async (req, res) => {
+  const startedAt = process.hrtime.bigint();
+  // Every request gets an id (honouring an upstream proxy's id) so a report from
+  // the browser can be matched to exactly one log line.
+  req.posRequestId = String(req.headers['x-request-id'] || crypto.randomUUID()).slice(0, 60);
+  req.posIp = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '';
   securityHeaders(res);
+  res.setHeader('X-Request-Id', req.posRequestId);
   const url = new URL(req.url, `http://${req.headers.host}`);
+  res.on('finish', () => {
+    const ms = Math.round(Number(process.hrtime.bigint() - startedAt) / 1e6);
+    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+    log[level]('request', {
+      reqId: req.posRequestId, method: req.method, path: url.pathname,
+      status: res.statusCode, ms, user: req.posUser?.username || null, ip: req.posIp,
+    });
+  });
   try {
     if (url.pathname === '/healthz' && req.method === 'GET') {
       db.prepare('SELECT 1').get();
@@ -710,16 +894,49 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
     fs.createReadStream(filePath).pipe(res);
   } catch (e) {
-    console.error('Request error:', e);
-    if (!res.headersSent) sendJson(res, 500, { error: 'Internal server error', messageAr: 'خطأ داخلي في الخادم' });
+    log.error('request failed', { reqId: req.posRequestId, method: req.method, path: url.pathname, error: e.message });
+    if (!res.headersSent) sendJson(res, 500, { error: 'Internal server error', messageAr: 'خطأ داخلي في الخادم', requestId: req.posRequestId });
   }
 });
+
+// ---------- lifecycle ----------
+let shuttingDown = false;
+function shutdown(signal, code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info('shutdown requested', { signal });
+  backupJob?.stop();
+  const finish = () => {
+    try { db.close(); } catch (e) { log.warn('database close failed', { error: e.message }); }
+    log.info('server stopped', { signal });
+    process.exit(code);
+  };
+  try {
+    server.close(finish);
+    server.closeIdleConnections?.();
+  } catch { finish(); }
+  setTimeout(() => { log.error('shutdown timed out, forcing exit', { signal }); process.exit(code || 1); }, 10_000).unref();
+}
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log(`🛒 FreshMart POS (production) running at http://${HOST}:${PORT}`);
+    console.log(`   Logs: ${log.isJson() ? 'JSON lines' : 'text'} (POS_LOG_FORMAT=json for log shippers)`);
+    console.log(`   Backups: ${backupJob ? `${BACKUP_DIR} (every ${BACKUP_INTERVAL_HOURS}h, keep ${BACKUP_KEEP})` : 'disabled'}`);
     if (DEVELOPER_USERNAME) console.log('   Developer console: enabled (credentials are configured via environment)');
     console.log('   Checkout: cash only');
+    log.info('server listening', {
+      host: HOST, port: Number(PORT),
+      backupDir: backupJob ? BACKUP_DIR : null,
+      logFormat: log.isJson() ? 'json' : 'text',
+    });
+  });
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('unhandledRejection', reason => log.error('unhandled rejection', { error: reason?.message || String(reason) }));
+  process.on('uncaughtException', err => {
+    log.error('uncaught exception', { error: err.message, stack: String(err.stack || '').split('\n').slice(0, 4).join(' | ') });
+    shutdown('uncaughtException', 1);
   });
 }
 

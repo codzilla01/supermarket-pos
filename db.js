@@ -204,6 +204,28 @@ function migrate(db) {
       CREATE INDEX idx_subscription_events_created ON subscription_events(created_at);
     `);
     db.prepare('PRAGMA user_version = 5').run();
+    version = 5;
+  }
+  if (version < 6) {
+    db.exec(`
+      CREATE TABLE audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL DEFAULT (datetime('now')),
+        request_id TEXT NOT NULL DEFAULT '',
+        actor_id INTEGER,
+        actor TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        entity TEXT NOT NULL DEFAULT '',
+        entity_id TEXT NOT NULL DEFAULT '',
+        details TEXT NOT NULL DEFAULT '',
+        ip TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX idx_audit_at ON audit_log(at);
+      CREATE INDEX idx_audit_action ON audit_log(action);
+      CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+    `);
+    db.prepare('PRAGMA user_version = 6').run();
   }
 }
 

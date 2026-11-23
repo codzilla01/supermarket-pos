@@ -234,6 +234,8 @@ function relocalize() {
   if ($('#view-sales').classList.contains('active')) safeRender(renderSales);
   if ($('#view-customers').classList.contains('active')) renderCustomers();
   if ($('#view-settings').classList.contains('active')) safeRender(renderSettings);
+  if ($('#view-audit').classList.contains('active')) safeRender(renderAudit);
+  if (importPlan) renderImportPreview(importPlan);
   if ($('#view-subscription').classList.contains('active')) renderSubscriptionStatus();
   if ($('#view-developer').classList.contains('active')) renderDeveloperDashboard();
   if (!$('#checkout-modal').hidden) { $('#due').textContent = money(totals().total); updateChange(); }
@@ -484,6 +486,7 @@ $$('.tab').forEach(btn => btn.addEventListener('click', () => {
   if (btn.dataset.view === 'settings') safeRender(renderSettings);
   if (btn.dataset.view === 'subscription') safeRender(renderSubscriptionStatus);
   if (btn.dataset.view === 'developer') safeRender(renderDeveloperDashboard);
+  if (btn.dataset.view === 'audit') safeRender(renderAudit);
 }));
 
 // ---------- Shifts ----------
@@ -894,6 +897,157 @@ function renderInventory() {
   }));
 }
 
+// ---------- Inventory import (Excel / CSV) ----------
+let importPlan = null;
+const IMPORT_FIELD_LABELS = { name: 'col.product', price: 'col.price', stock: 'col.stock', category: 'col.category', unit: 'col.unit', tax_rate: 'receipt.tax' };
+const IMPORT_NOTES = {
+  NAME_REQUIRED: 'imp.err.nameRequired', BAD_PRICE: 'imp.err.badPrice', BAD_STOCK: 'imp.err.badStock',
+  BAD_TAX: 'imp.err.badTax', DUPLICATE_BARCODE: 'imp.err.duplicate', EXISTS_KEPT: 'imp.err.existsKept',
+  NO_CHANGES: 'imp.err.noChanges',
+};
+
+function importStatusLabel(status) {
+  const keys = { create: 'imp.status.create', update: 'imp.status.update', skip: 'imp.status.skip', error: 'imp.status.error' };
+  return t(keys[status] || status);
+}
+
+function importNote(entry) {
+  if (entry.message) return t(IMPORT_NOTES[entry.message] || 'imp.err.other');
+  if (!entry.changes?.length) return '';
+  return entry.changes
+    .map(c => `${t(IMPORT_FIELD_LABELS[c.field] || 'imp.colNote')}: <bdi>${esc(c.from ?? '—')}</bdi> → <bdi>${esc(c.to ?? '—')}</bdi>`)
+    .join(' · ');
+}
+
+function renderImportPreview(data) {
+  const summary = data.summary;
+  $('#import-preview').hidden = false;
+  $('#import-summary').textContent = t('imp.summary', {
+    create: summary.create, update: summary.update, skip: summary.skip, error: summary.error,
+  });
+  $('#import-body').innerHTML = data.entries.map(entry => `<tr class="import-row ${esc(entry.status)}">
+    <td>${entry.line}</td>
+    <td><span class="status-badge ${esc(entry.status)}">${esc(importStatusLabel(entry.status))}</span></td>
+    <td dir="auto"><strong>${esc(entry.name || '—')}</strong></td>
+    <td>${entry.price == null ? '—' : money(entry.price)}</td>
+    <td dir="auto">${esc(unitLabel(entry.unit || 'each'))}</td>
+    <td><bdi>${entry.stock ?? 0}</bdi></td>
+    <td dir="ltr">${esc(entry.barcode || '—')}</td>
+    <td class="small" dir="auto">${importNote(entry)}</td>
+  </tr>`).join('');
+  const actionable = summary.create + summary.update;
+  const apply = $('#import-apply');
+  apply.hidden = actionable === 0;
+  apply.textContent = t('imp.applyCount', { n: actionable });
+  $('#import-status').textContent = [data.truncated ? t('imp.truncated') : '', actionable === 0 ? t('imp.nothingToDo') : ''].filter(Boolean).join(' ');
+}
+
+async function fileToBase64(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+$('#import-file').addEventListener('change', async e => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const status = $('#import-status');
+  status.textContent = t('imp.parsing', { name: file.name });
+  $('#import-apply').hidden = true;
+  try {
+    const contentBase64 = await fileToBase64(file);
+    const payload = { filename: file.name, contentBase64, updateExisting: $('#import-update').checked };
+    const data = await api('/api/products/import/preview', { method: 'POST', body: JSON.stringify(payload) });
+    importPlan = { payload, data };
+    renderImportPreview(data);
+  } catch (err) {
+    importPlan = null;
+    $('#import-preview').hidden = true;
+    status.textContent = t('err.prefix', { message: err.message });
+  }
+});
+
+$('#import-apply').addEventListener('click', async () => {
+  if (!importPlan) return;
+  const btn = $('#import-apply');
+  btn.disabled = true;
+  try {
+    const result = await api('/api/products/import', { method: 'POST', body: JSON.stringify(importPlan.payload) });
+    products = await api('/api/products');
+    scanStockAlerts(products);
+    renderCategories(); renderGrid(); renderInventory();
+    toast(t('imp.done', { created: result.created, updated: result.updated, skipped: result.skipped, failed: result.failed }));
+    importPlan = null;
+    $('#import-file').value = '';
+    $('#import-preview').hidden = true;
+    $('#import-status').textContent = '';
+  } catch (err) {
+    toast(t('err.prefix', { message: err.message }));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------- Audit trail ----------
+const fmtDateTime = value => {
+  if (!value) return '—';
+  const iso = String(value).includes('T') ? value : String(value).replace(' ', 'T') + 'Z';
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(I18N.locale(), { dateStyle: 'short', timeStyle: 'short' });
+};
+/** Render structured details ("{file:...}") as readable pairs instead of raw JSON. */
+function formatAuditDetails(details) {
+  const text = String(details ?? '').trim();
+  if (!text) return '—';
+  if (!text.startsWith('{')) return text;
+  try {
+    const obj = JSON.parse(text);
+    return Object.entries(obj)
+      .map(([key, value]) => `${key}: ${value !== null && typeof value === 'object' ? JSON.stringify(value) : value}`)
+      .join(' · ');
+  } catch {
+    return text;
+  }
+}
+
+function auditActionLabel(action) {
+  const key = `audit.action.${action}`;
+  const label = t(key);
+  return label === key ? action : label;
+}
+async function renderAudit() {
+  if (me?.role !== 'admin') return;
+  const params = new URLSearchParams({ limit: '200' });
+  const action = $('#audit-action').value;
+  const q = $('#audit-search').value.trim();
+  if (action) params.set('action', action);
+  if (q) params.set('q', q);
+  const data = await api('/api/audit?' + params.toString());
+  $('#audit-count').textContent = t('audit.count', { n: data.total });
+  if ($('#audit-action').dataset.filled !== 'yes') {
+    $('#audit-action').innerHTML = `<option value="">${esc(t('audit.allActions'))}</option>` +
+      data.actions.map(a => `<option value="${esc(a.action)}">${esc(auditActionLabel(a.action))} (${a.c})</option>`).join('');
+    $('#audit-action').dataset.filled = 'yes';
+  }
+  $('#audit-action').value = action;
+  $('#audit-body').innerHTML = data.entries.map(entry => `<tr>
+    <td class="nowrap"><bdi>${esc(fmtDateTime(entry.at))}</bdi></td>
+    <td dir="auto">${esc(entry.actor || '—')}${entry.role ? ` <span class="muted small">(${esc(roleLabel(entry.role))})</span>` : ''}</td>
+    <td>${esc(auditActionLabel(entry.action))}</td>
+    <td class="small" dir="auto">${esc(formatAuditDetails(entry.details))}${entry.entity ? ` <span class="muted">${esc(entry.entity)}#${esc(entry.entity_id)}</span>` : ''}</td>
+    <td class="small" dir="ltr">${esc(entry.ip || '—')}</td>
+  </tr>`).join('');
+  $('#audit-empty').hidden = data.entries.length > 0;
+}
+$('#audit-refresh').addEventListener('click', () => safeRender(renderAudit));
+$('#audit-action').addEventListener('change', () => safeRender(renderAudit));
+let auditSearchTimer = null;
+$('#audit-search').addEventListener('input', () => {
+  clearTimeout(auditSearchTimer);
+  auditSearchTimer = setTimeout(() => safeRender(renderAudit), 300);
+});
+
 function openProductForm(p) {
   $('#product-form-title').textContent = p ? t('prod.titleEdit') : t('prod.titleAdd');
   $('#f-id').value = p ? p.id : '';
@@ -1058,12 +1212,44 @@ async function renderSettings() {
     <td>${u.role === 'admin' ? esc(t('role.ownerBadge')) : esc(t('role.cashierBadge'))}</td>
     <td>${u.active ? `<span class="stock-badge">${esc(t('status.active'))}</span>` : `<span class="stock-badge out">${esc(t('status.disabled'))}</span>`}</td>
     <td>${u.id !== me.id ? `<button class="icon-btn" data-toggle="${u.id}" title="${esc(t('set.users'))}">${u.active ? '🚫' : '✅'}</button>` : ''}</td></tr>`).join('');
+  await renderBackups();
   $$('#users-body [data-toggle]').forEach(b => b.addEventListener('click', async () => {
     const u = users.find(x => x.id === +b.dataset.toggle);
     await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify({ active: !u.active }) });
     renderSettings();
   }));
 }
+
+// ---------- Server-side automatic backups ----------
+async function renderBackups() {
+  const note = $('#backup-note');
+  try {
+    const data = await api('/api/backups');
+    note.textContent = data.enabled
+      ? t('set.autobackupNote', { hours: data.interval_hours, keep: data.keep, dir: data.dir })
+      : t('set.backupsDisabled');
+    $('#backups-list').innerHTML = data.files.length
+      ? data.files.map(f => `<li><bdi>${esc(f.file)}</bdi> <span class="muted small">${esc(fmtDateTime(f.created_at))} · <bdi>${(f.bytes / 1024).toFixed(1)} KB</bdi></span></li>`).join('')
+      : `<li class="muted small">${esc(t('set.noBackups'))}</li>`;
+  } catch (err) {
+    note.textContent = t('err.prefix', { message: err.message });
+  }
+}
+
+$('#backup-run').addEventListener('click', async () => {
+  const btn = $('#backup-run');
+  btn.disabled = true;
+  try {
+    $('#backup-note').textContent = t('set.backupRunning');
+    const result = await api('/api/backups/run', { method: 'POST', body: '{}' });
+    toast(t('set.backupCreated', { file: result.file }));
+  } catch (err) {
+    toast(t('err.prefix', { message: err.message }));
+  } finally {
+    btn.disabled = false;
+    await renderBackups();
+  }
+});
 
 $('#store-form').addEventListener('submit', async e => {
   e.preventDefault();

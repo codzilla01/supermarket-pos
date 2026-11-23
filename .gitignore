@@ -3,3 +3,5 @@ data.json
 pos.db
 pos.db-shm
 pos.db-wal
+
+backups/

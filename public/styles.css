@@ -213,6 +213,39 @@ tr:last-child td { border-bottom: none; }
   .cart-panel { position: static; max-height: none; }
   .two-col { grid-template-columns: 1fr; }
 }
+/* ---------- Stock import (Excel / CSV) ---------- */
+.import-card { margin-top: 18px; }
+.import-card h3 { display: flex; align-items: center; gap: 8px; }
+.import-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0 6px; }
+.import-controls .inline-check { margin: 0; }
+.import-controls a.btn { text-decoration: none; }
+.import-summary { font-weight: 700; color: var(--green-dark); margin: 6px 0 10px; }
+.import-table { max-height: 420px; overflow: auto; }
+.import-table table { font-size: 13px; }
+.import-table thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
+.import-row.error { background: #fef2f2; }
+.import-row.skip { opacity: .72; }
+.status-badge.create { background: #dcfce7; color: #15803d; }
+.status-badge.update { background: #dbeafe; color: #1d4ed8; }
+.status-badge.skip { background: #f3f4f6; color: #6b7280; }
+.status-badge.error { background: #fee2e2; color: #dc2626; }
+.import-card #import-apply { margin-top: 14px; }
+
+/* ---------- Audit log ---------- */
+#view-audit .head-actions { flex-wrap: wrap; }
+#view-audit input#audit-search { min-width: 220px; }
+#audit-body td { vertical-align: top; }
+.nowrap { white-space: nowrap; }
+#audit-body tr:nth-child(even) { background: #fafaf9; }
+
+/* ---------- Server backups ---------- */
+.backup-list { list-style: none; margin-top: 10px; display: grid; gap: 6px; }
+.backup-list li {
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: baseline;
+  background: #f9fafb; border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px; font-size: 12px;
+}
+.backup-list bdi { font-family: ui-monospace, Menlo, Consolas, monospace; direction: ltr; unicode-bidi: isolate; }
+
 @media print {
   @page { size: 80mm auto; margin: 0; }
   html, body { width: 80mm; margin: 0 !important; padding: 0 !important; }

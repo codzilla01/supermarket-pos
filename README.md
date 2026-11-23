@@ -1,6 +1,6 @@
 # 🛒 FreshMart — Supermarket POS (Production-oriented)
 
-نظام نقاط بيع سوبر ماركت بواجهة **عربية كاملة (RTL)** وإنجليزية، وبدون أي حزم خارجية (**zero npm dependencies** — Node.js ≥ 22 built-ins only): قاعدة بيانات SQLite، حسابات وأدوار، ورديات كاشير مع تسوية نقدية، نقاط ولاء، مرتجعات، طابور بيع دون اتصال، تحصيل نقدي فقط، وفترة تجريبية 14 يومًا مع اشتراك سنوي.
+نظام نقاط بيع سوبر ماركت بواجهة **عربية كاملة (RTL)** وإنجليزية، وبدون أي حزم خارجية (**zero npm dependencies** — Node.js ≥ 22 built-ins only): قاعدة بيانات SQLite، حسابات وأدوار، ورديات كاشير مع تسوية نقدية، نقاط ولاء، مرتجعات، **استيراد المخزون من Excel/CSV**، **سجل تدقيق**، **نسخ احتياطي تلقائي**، سجلات منظّمة، طابور بيع دون اتصال، تحصيل نقدي فقط، وفترة تجريبية 14 يومًا مع اشتراك سنوي.
 
 A supermarket point-of-sale application and subscription-managed installation: **zero npm dependencies** (Node.js ≥ 22 built-ins only), SQLite database, user accounts with roles, cash shifts with reconciliation, loyalty points, returns, offline sales queue, cash-only checkout, and a 14-day trial / annual license lifecycle.
 
@@ -40,7 +40,12 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 - **Returns** — cash-sale void/refund actions restore stock and loyalty points. Historical card refunds are blocked unless provider credentials and the original PaymentIntent reference are available; then full refunds use an idempotency key.
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
 - **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
+- **Excel/CSV stock import** — admins upload an `.xlsx`/`.xlsm`/`.csv` of products (Arabic or English headers), get a full preview (new / update / skipped / error per line) and confirm before anything is written; Arabic-Indic digits, `14%`/`0.14` tax formats, Arabic categories and units are normalized, existing rows are matched by barcode then name, and a downloadable CSV template is included
+- **Audit trail** — every sensitive action (sign-in and failed sign-ins, password changes, shifts, voids/refunds, product create/update/delete/import, settings, users, backups) is recorded with actor, role, IP, request id and details, and is searchable from the admin-only **Audit log** tab
+- **Automatic backups** — a gzipped JSON snapshot is written every 24 h to `backups/` (7 kept by default, configurable), plus manual "create now" from Settings; each snapshot includes products, sales, shifts, customers, settings, subscription history and the audit log
 - **Backups** — JSON export/import of products, sales, sale items, shifts, customers and settings (user credentials are not exported)
+- **Diagnostics & logs** — every response carries `X-Request-Id`, requests are logged with method/path/status/ms/user/IP (text or JSON lines), graceful shutdown on SIGTERM/SIGINT, and the Arabic diagnostics card explains an unreachable API
+- **PWA icons** — real 192/512 PNGs plus maskable and Apple touch icons generated with `npm run icons` (no image tooling required)
 - **Cash-only checkout** — card buttons and card-sale API requests are disabled; each new transaction must include the cash tendered and calculates change. A server-side Stripe secret is only used to refund historical card sales.
 - **Annual subscription lifecycle** — fresh installs begin with a 14-day trial; developer console records manual payment references, activates/extends a 365-day annual subscription, suspends/restores service, and records an audit timeline. POS APIs are blocked after expiry/suspension while subscription status and logout remain available.
 - **Developer control center** — separate env-provisioned developer account, store metrics, license dates/status, last activity, activation/login history, payment receipt references, manual annual renewal, suspension and restoration. This console manages the *current installation only*.
@@ -57,20 +62,30 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 | `POS_DEVELOPER_PASSWORD` | required | Developer-console secret (16+ characters) |
 | `POS_COOKIE_SECURE` | `true` | Secure session cookies; set false only for local plain HTTP |
 | `STRIPE_SECRET_KEY` | — | Optional; used only for refunds of historical Stripe card sales (new checkout is cash-only) |
+| `POS_BACKUP_ENABLED` | `true` | Set to `false` to disable the in-process backup timer |
+| `POS_BACKUP_DIR` | `./backups` next to the DB | Where gzipped snapshots are written |
+| `POS_BACKUP_INTERVAL_HOURS` | `24` | Hours between automatic snapshots |
+| `POS_BACKUP_KEEP` | `7` | How many snapshots to retain |
+| `POS_LOG_FORMAT` | `text` | `json` emits one JSON object per line for log shippers |
+| `POS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 Store settings (name, tax rate, currency, low-stock threshold, register name, loyalty rates) are managed in **Settings** and stored in the database. Egyptian pound (EGP / ج.م) is the default display currency; set product prices and validate all local tax rules for each store.
 
 ## Data & backups
 
-- All data lives in a single SQLite file (`pos.db`, WAL mode). Back it up by copying the file, or use **Settings → Export backup** for a portable JSON snapshot.
+- All data lives in a single SQLite file (`pos.db`, WAL mode). Back it up by copying the file, use **Settings → Export backup** for a portable JSON snapshot, or rely on the automatic gzipped snapshots in `backups/` (listed under **Settings → Automatic backups**).
 - The old demo `data.json` format is no longer used.
 - Subscription dates and audit records are stored in SQLite; the developer console logs successful logins, renewals, suspensions and restorations.
 
 ## Tests and health check
 
 ```bash
-npm test   # API tests (temporary database) + localization/translation tests
+npm test        # 39 tests: API, localization, import/audit/backup/logging, end-to-end till flow
+npm run icons   # regenerate public/icons/*.png
+npm run test:ui # optional headless-browser smoke test (needs: npm i --no-save jsdom)
 ```
+
+`test/features.test.js` covers the spreadsheet reader (stored and deflated `.xlsx`), Arabic header/digit mapping, the import preview/apply contract, the audit trail, backup creation + retention, request ids + JSON logging, PWA icons, and one end-to-end shift → sale → void flow. `npm run test:ui` drives the real UI in a headless DOM (import a CSV, read the audit tab, create a backup, switch language) without adding a runtime dependency.
 
 The localization suite (`test/i18n.test.js`) fails the build if any translation key used by the UI is missing in Arabic or English, if a placeholder such as `{id}` disappears in either language, or if an API error loses its Arabic `messageAr`.
 
@@ -93,6 +108,28 @@ The developer console and its license/audit data live in the same SQLite databas
 3. **بروكسي عكسي لا يمرّر `‎/api/…`** إلى المنفذ الصحيح (nginx/Caddy)، أو جدار ناري يمنع المسار.
 
 لذلك يعرض التطبيق تلقائيًا بطاقة تشخيص عربية بجانب شاشة الدخول: رابط الصفحة، نتيجة فحص حقيقي لـ `‎/api/config` (JSON ✅ أو HTML ❌)، حالة الشبكة، وخطوات الإصلاح، مع أزرار **إعادة المحاولة** و**نسخ التقرير** لمشاركته مع المسؤول. وحين يرد الخادم بصفحة HTML أو خطأ 404/5xx تظهر رسالة تشرح السبب بدل رمز الحالة وحده.
+
+## استيراد المخزون من ملف Excel
+
+في **المخزون → رفع أصناف المخزون من ملف Excel** (للمدير فقط):
+
+1. حمّل القالب (`⬇ تنزيل القالب (CSV)`) أو استخدم ملفك.
+2. اختر ملف `.xlsx` أو `.xlsm` أو `.csv` (حتى ٣ ميجابايت).
+3. راجع المعاينة: كل سطر يظهر كـ **جديد / تحديث / تخطٍ / خطأ** مع سبب الخطأ والتغييرات المقترحة (السعر، المخزون…).
+4. اضغط **تأكيد الاستيراد** — لا يُكتب أي شيء قبل هذا التأكيد، والكتابة تتم في معاملة واحدة.
+
+الأعمدة المتعرَّف عليها (عربي أو إنجليزي، وتُقبل المرادفات): **اسم المنتج، القسم، السعر، الوحدة، المخزون، الباركود، الضريبة، الرمز**. يُقبل الترتيب السابق أو أي ترتيب آخر، ووجود صف عنوان في أول ٨ صفوف. تفاصيل المعالجة:
+
+- الأرقام العربية الهندية (`١٢٣٫٤٥`) والفواصل الألفية ورموز العملة تُحوَّل تلقائيًا.
+- الضريبة تُقبل كسرًا (`0.14`) أو نسبة (`14%`)؛ الوحدات والأقسام العربية تُحوَّل إلى القيم القياسية المخزّنة.
+- المطابقة مع الأصناف الموجودة: **الباركود أولًا ثم الاسم**؛ ويمكن إلغاء التحديث من مربع «تحديث الأصناف الموجودة».
+- الأسطر الناقصة أو المكررة أو غير الصالحة تُرفض وتظهر في المعاينة فقط، ولا تُفشل بقية الملف.
+
+## سجل التدقيق والنسخ الاحتياطي
+
+- **السجل (Audit log)**: تبويب للمدير يعرض الوقت، المنفّذ ودوره، العملية (بمسمّى عربي)، التفاصيل، والعنوان، مع تصفية حسب نوع العملية وبحث نصي. قاعدة البيانات تحتفظ بمعرّف الطلب `X-Request-Id` لكل عملية، فيمكن ربط أي سطر بسجل الخادم.
+- **النسخ التلقائي**: نسخة مضغوطة `backups/backup-YYYYMMDD-HHMMSS.json.gz` كل 24 ساعة (واحدة فور التشغيل إن لم توجد نسخة حديثة)، ويُحتفظ بأحدث 7 نسخ. تظهر القائمة في **الإعدادات** مع زر «إنشاء نسخة الآن».
+- **السجلات**: كل طلب يُسجَّل بسطر واحد يحتوي المعرّف والمسار والحالة والمدة والمستخدم؛ `POS_LOG_FORMAT=json` للإرسال إلى أدوات التحليل، و`SIGTERM`/`SIGINT` تُغلق الخادم وقاعدة البيانات بأمان.
 
 ## Deployment notes
 
