@@ -231,6 +231,10 @@ tr:last-child td { border-bottom: none; }
 .status-badge.error { background: #fee2e2; color: #dc2626; }
 .import-card #import-apply { margin-top: 14px; }
 
+/* ---------- Profit report ---------- */
+.negative { color: #dc2626; }
+.stat strong.negative { color: #f87171; }
+
 /* ---------- Purchases, suppliers, stocktake ---------- */
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .stat-row .stat { box-shadow: none; padding: 12px; }

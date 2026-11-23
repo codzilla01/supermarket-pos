@@ -39,6 +39,7 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 - **Loyalty** — customers with phone numbers, earn points per store-currency unit spent, redeem points at checkout
 - **Returns** — cash-sale void/refund actions restore stock and loyalty points. Historical card refunds are blocked unless provider credentials and the original PaymentIntent reference are available; then full refunds use an idempotency key.
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
+- **Profit & margin (admin)** — pick 7, 30 or 90 days and see tax-exclusive revenue, cost of goods (from each product's recorded unit cost), gross profit and margin, broken down per day and per product; the panel names how many sold units still lack a cost, and the whole report exports to CSV. Voided and refunded sales are excluded, and discounts/loyalty redemptions are shared across lines the same way the sale allocated them
 - **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
 - **Excel/CSV stock import** — admins upload an `.xlsx`/`.xlsm`/`.csv` of products (Arabic or English headers), get a full preview (new / update / skipped / error per line) and confirm before anything is written; Arabic-Indic digits, `14%`/`0.14` tax formats, Arabic categories and units are normalized, existing rows are matched by barcode then name, and a downloadable CSV template is included
 - **Purchases & suppliers** — supplier records (name, phone, email, note, soft-deleted instead of erased) and purchase invoices with multiple lines; receiving an invoice increases stock, recomputes a moving-average unit cost, applies the store tax rate, records what was paid (`paid` / `partial` / `unpaid`) and can be reversed in one click (single-shot, refused if stock is insufficient). Every invoice keeps its number, note and author for auditing
@@ -89,7 +90,7 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Tests and health check
 
 ```bash
-npm test        # 39 tests: API, localization, import/audit/backup/logging, end-to-end till flow
+npm test        # 45 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
 npm run icons   # regenerate public/icons/*.png
 npm run test:ui # optional headless-browser smoke test (needs: npm i --no-save jsdom)
 ```
@@ -146,6 +147,17 @@ The developer console and its license/audit data live in the same SQLite databas
 - **فاتورة مشتريات**: بنود متعددة (صنف، كمية، تكلفة الوحدة)؛ عند الحفظ تدخل الكميات إلى المخزون ويُحدَّث متوسط تكلفة الوحدة، وتُطبَّق نسبة الضريبة الافتراضية أو نسبة مخصّصة، ويُسجَّل المدفوع للمورد. عكس الفاتورة يخصم الكميات فورًا، مرة واحدة فقط، ويُرفض إن كان المخزون لا يكفي (409).
 - **الجرد**: «بدء جرد جديد» يأخذ لقطة لكل صنف نشط مع الكمية المتوقعة. أدخل الكميات الفعلية (يظهر الفرق مباشرة، مع بحث ومرشّح «الفروق فقط»)، احفظ مسوّدة، ثم «تطبيق الجرد» لكتابة الكميات الفعلية. جرد واحد مفتوح في كل مرة، وكل ذلك مسجّل في سجل التدقيق.
 - **النسخ المشفّر خارج الخادم**: اضبط `POS_BACKUP_ENCRYPTION_KEY` (16 حرفًا أو أكثر) و`POS_BACKUP_UPLOAD_URL` (واختياريًا `POS_BACKUP_UPLOAD_TOKEN` و`POS_BACKUP_UPLOAD_METHOD`)، ثم استخدم زر «رفع نسخة مشفّرة الآن» في الإعدادات. الملف الناتج `.posbak` مشفّر بـ AES-256-GCM، ولا يمكن فتحه بدون المفتاح: `node scripts/restore-backup.js --file x.posbak --key "…" --check`. المفاتيح لا تُكتب في الكود ولا تُرفع إلى Git.
+
+## تقرير الأرباح والهامش
+
+في تبويب «المبيعات والتقارير» يظهر للمدير كرت **الأرباح والهامش**: اختر ٧ / ٣٠ / ٩٠ يومًا لترى:
+
+- **المبيعات بدون ضريبة** و**تكلفة البضاعة** (كمية كل صنف × تكلفة وحدته المسجّلة) و**الربح الإجمالي** و**الهامش %**.
+- تفصيل **يومي** (المبيعات، التكلفة، الربح، الهامش) وجدول **الأعلى ربحًا** لكل صنف.
+- تنبيه بعدد الوحدات المباعة التي لا تكلفة مسجّلة لها بعد، وزر **تصدير CSV** (بصيغة عربية/إنجليزية حسب اللغة).
+- الفواتير الملغاة والمسترجعة مستثناة، والخصومات ونقاط الولاء تُوزَّع على البنود بنفس نسب البيع الأصلي.
+
+ملاحظة: يُحسب الربح بتكلفة الوحدة **الحالية** من فواتير المشتريات (لا يوجد سجل تاريخي لتكلفة لحظة البيع)، فالبيانات القديمة قبل تسجيل التكلفة تظهر بهامش أعلى.
 
 ## Deployment notes
 

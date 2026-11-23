@@ -675,6 +675,60 @@ async function handleApi(req, res, url) {
     });
   }
 
+  // ----- Profit report (admin) -----
+  if (p === '/api/reports/profit' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const days = Math.min(90, Math.max(1, int(url.searchParams.get('days'), 7)));
+    const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    const sales = db.prepare("SELECT id, date, subtotal, tax, total FROM sales WHERE status = 'completed' AND date(date) >= date(?) ORDER BY date").all(from);
+    const costById = new Map(db.prepare('SELECT id, cost_price FROM products').all().map(row => [row.id, row.cost_price]));
+    const itemsStmt = db.prepare('SELECT product_id, name, emoji, qty, line_total FROM sale_items WHERE sale_id = ?');
+    const totals = { sales: 0, qty: 0, revenue: 0, cost: 0, profit: 0, margin: null, unpriced_items: 0 };
+    const dayMap = new Map();
+    const productMap = new Map();
+    const bump = (target, revenue, cost, qty) => {
+      target.qty += qty;
+      target.revenue = round2(target.revenue + revenue);
+      target.cost = round2(target.cost + cost);
+    };
+    for (const sale of sales) {
+      // Revenue is tax-exclusive: discount and loyalty redemption are shared out
+      // in proportion to each line, which is how the sale itself allocated them.
+      const net = Math.max(0, round2(sale.total - sale.tax));
+      const share = sale.subtotal > 0 ? net / sale.subtotal : 0;
+      const day = String(sale.date).slice(0, 10);
+      if (!dayMap.has(day)) dayMap.set(day, { day, sales: 0, qty: 0, revenue: 0, cost: 0, profit: 0, margin: null });
+      const bucket = dayMap.get(day);
+      bucket.sales += 1;
+      totals.sales += 1;
+      for (const item of itemsStmt.all(sale.id)) {
+        const costPrice = item.product_id != null ? Number(costById.get(item.product_id)) : 0;
+        const known = Number.isFinite(costPrice) && costPrice > 0;
+        if (!known) totals.unpriced_items += item.qty;
+        const revenue = round2(item.line_total * share);
+        const cost = round2((known ? costPrice : 0) * item.qty);
+        const key = item.product_id == null ? `name:${item.name}` : `id:${item.product_id}`;
+        if (!productMap.has(key)) productMap.set(key, { id: item.product_id, name: item.name, emoji: item.emoji, qty: 0, revenue: 0, cost: 0, profit: 0, margin: null });
+        bump(bucket, revenue, cost, item.qty);
+        bump(productMap.get(key), revenue, cost, item.qty);
+        bump(totals, revenue, cost, item.qty);
+      }
+    }
+    const finalize = row => {
+      row.profit = round2(row.revenue - row.cost);
+      row.margin = row.revenue > 0 ? round2(row.profit / row.revenue * 100) : null;
+      return row;
+    };
+    finalize(totals);
+    return sendJson(res, 200, {
+      window: { days, from, to: new Date().toISOString().slice(0, 10) },
+      cost_source: 'current',
+      totals,
+      days: [...dayMap.values()].map(finalize).sort((a, b) => (a.day < b.day ? 1 : -1)),
+      products: [...productMap.values()].map(finalize).sort((a, b) => b.profit - a.profit).slice(0, 10),
+    });
+  }
+
   // ----- Users (admin) -----
   if (p === '/api/users' && method === 'GET') {
     if (!requireAdmin(user, res)) return;

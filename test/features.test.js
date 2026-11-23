@@ -495,6 +495,61 @@ test('end to end: shift, sale, void and audit trail', async () => {
   }
 });
 
+// ---------- profit report ----------
+test('the profit report prices sales against the recorded cost and is admin-only', async () => {
+  await req('POST', '/api/shifts/open', { openingFloat: 0 });
+  const product = (await req('GET', '/api/products')).data.find(p => p.barcode === '200001');
+  const priced = await req('PUT', `/api/products/${product.id}`, { costPrice: 10 });
+  assert.equal(priced.status, 200);
+  assert.equal(priced.data.cost_price, 10);
+
+  const sale = await req('POST', '/api/sales', {
+    items: [{ id: product.id, qty: 4 }],
+    tendered: 1000,
+    idempotencyKey: 'profit-report-sale-0001',
+  });
+  assert.equal(sale.status, 201);
+
+  const report = await req('GET', '/api/reports/profit?days=7');
+  assert.equal(report.status, 200);
+  assert.equal(report.data.window.days, 7);
+  assert.equal(report.data.cost_source, 'current');
+  assert.ok(report.data.totals.sales >= 1);
+
+  const row = report.data.products.find(p => p.id === product.id);
+  assert.ok(row, 'the sold product appears in the report');
+  assert.equal(row.qty, 4);
+  assert.equal(row.revenue, 90, 'revenue is tax-exclusive (4 x 22.50)');
+  assert.equal(row.cost, 40, 'cost uses the recorded unit cost');
+  assert.equal(row.profit, 50);
+  assert.equal(row.margin, 55.56);
+
+  const today = report.data.days.find(d => d.sales >= 1);
+  assert.ok(today, 'the day bucket exists');
+  assert.ok(today.revenue >= 90 && today.cost >= 40);
+
+  const limited = await req('GET', '/api/reports/profit?days=500');
+  assert.equal(limited.data.window.days, 90, 'the window is capped at 90 days');
+
+  assert.equal((await req('GET', '/api/reports/profit', null, false)).status, 401);
+
+  // A cashier may sell, but not read margins.
+  await req('POST', '/api/users', { username: 'profit-cashier', password: 'profit-cashier-pass-2026', role: 'cashier', name: 'Profit Cashier' });
+  const login = await fetch(BASE + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'profit-cashier', password: 'profit-cashier-pass-2026' }),
+  });
+  let cashierCookie = (login.headers.get('set-cookie') || '').split(';')[0];
+  await fetch(BASE + '/api/me/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cashierCookie },
+    body: JSON.stringify({ current: 'profit-cashier-pass-2026', next: 'profit-cashier-pass-2026-v2' }),
+  });
+  const denied = await fetch(BASE + '/api/reports/profit', { headers: { Cookie: cashierCookie } });
+  assert.equal(denied.status, 403);
+});
+
 // ---------- PWA icons ----------
 test('the manifest advertises real PNG icons that exist on disk', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'public', 'manifest.webmanifest'), 'utf8'));
