@@ -50,10 +50,22 @@ function apiError(status, err, contentType) {
   return new Error((lang() === 'ar' ? (err.messageAr || err.error) : err.error) || t('err.request', { status }));
 }
 
+// Some browsers drop cookies for embedded/preview contexts. When the server
+// issues a session token (POS_TOKEN_AUTH=true) we keep it and send it as a
+// bearer header alongside the cookie.
+const SESSION_KEY = 'pos_session_token';
+const sessionToken = () => { try { return localStorage.getItem(SESSION_KEY) || ''; } catch { return ''; } };
+const storeSessionToken = token => { try { token ? localStorage.setItem(SESSION_KEY, token) : localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ } };
+
 async function api(path, opts = {}) {
   let res;
   try {
-    const headers = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(), ...(opts.headers || {}) };
+    const token = sessionToken();
+    const headers = {
+      Accept: 'application/json', 'Content-Type': 'application/json', 'X-POS-Register': terminalRegister(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers || {}),
+    };
     res = await fetch(path, { ...opts, headers });
   } catch (e) {
     throw Object.assign(new Error(t('err.network')), { offline: true });
@@ -435,6 +447,7 @@ $('#login-form').addEventListener('submit', async e => {
   err.hidden = true;
   try {
     const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#login-user').value, password: $('#login-pass').value }) });
+    if (data.token) storeSessionToken(data.token);
     me = data.user;
     if (me.mustChangePassword) {
       $('#login-screen').hidden = true;
@@ -459,6 +472,7 @@ $('#login-form').addEventListener('submit', async e => {
 
 $('#logout-btn').addEventListener('click', async () => {
   try { await api('/api/logout', { method: 'POST' }); } catch { /* ignore */ }
+  storeSessionToken('');
   showLogin();
 });
 

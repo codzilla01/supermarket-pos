@@ -185,8 +185,19 @@ function sessionCookie(token) {
 }
 
 let lastActivityWrite = 0;
+// Browsers that block third-party cookies (embedded previews, strict privacy
+// modes) cannot keep the session cookie. POS_TOKEN_AUTH=true lets the client
+// send the same session token as `Authorization: Bearer …` instead.
+const TOKEN_AUTH = process.env.POS_TOKEN_AUTH === 'true';
+
+function sessionTokenFrom(req) {
+  const header = String(req.headers.authorization || '');
+  if (TOKEN_AUTH && header.startsWith('Bearer ')) return header.slice(7).trim();
+  return auth.parseCookies(req).pos_session;
+}
+
 function requireAuth(req, res) {
-  const token = auth.parseCookies(req).pos_session;
+  const token = sessionTokenFrom(req);
   const user = auth.getSessionUser(db, token);
   if (!user) { sendJson(res, 401, { error: 'Not authenticated', messageAr: 'يجب تسجيل الدخول' }); return null; }
   req.posUser = user;
@@ -300,8 +311,10 @@ async function handleApi(req, res, url) {
     logSubscriptionEvent('login', `Successful sign-in: ${user.username}`, user.username);
     req.posUser = user;
     audit(req, user, 'login', 'user', user.id, `role=${user.role}`);
-    return sendJson(res, 200, { user: { id: user.id, username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, subscriptionStatus: subscriptionState().status } },
-      { 'Set-Cookie': sessionCookie(token) });
+    return sendJson(res, 200, {
+      user: { id: user.id, username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, subscriptionStatus: subscriptionState().status },
+      ...(TOKEN_AUTH ? { token } : {}),
+    }, { 'Set-Cookie': sessionCookie(token) });
   }
 
   // Everything below requires auth
@@ -354,7 +367,7 @@ async function handleApi(req, res, url) {
 
   if (p === '/api/logout' && method === 'POST') {
     audit(req, user, 'logout', 'user', user.id, '');
-    auth.deleteSession(db, auth.parseCookies(req).pos_session);
+    auth.deleteSession(db, sessionTokenFrom(req));
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=${sessionCookieAttributes({ maxAge: 0 })}` });
   }
   if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, subscriptionStatus: subscriptionState().status } });

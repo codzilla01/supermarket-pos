@@ -65,6 +65,7 @@ before(async () => {
       POS_BACKUP_KEEP: '2',
       POS_BACKUP_INTERVAL_HOURS: '24',
       POS_LOG_FORMAT: 'json',
+      POS_TOKEN_AUTH: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -495,6 +496,27 @@ test('end to end: shift, sale, void and audit trail', async () => {
   for (const expected of ['shift_opened', 'sale_voided', 'shift_closed']) {
     assert.ok(actions.includes(expected), `audit should contain ${expected}`);
   }
+});
+
+// ---------- bearer sessions ----------
+test('the session token works as a bearer header when token auth is on', async () => {
+  const login = await fetch(BASE + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'store-manager-password-2026!' }),
+  });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  assert.match(body.token, /^[a-f0-9]{64}$/, 'login returns the session token');
+
+  const viaHeader = await fetch(BASE + '/api/products', { headers: { Authorization: `Bearer ${body.token}` } });
+  assert.equal(viaHeader.status, 200);
+  assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: 'Bearer not-a-session' } })).status, 401);
+  assert.equal((await fetch(BASE + '/api/products')).status, 401);
+
+  const logout = await fetch(BASE + '/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${body.token}` } });
+  assert.equal(logout.status, 200);
+  assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: `Bearer ${body.token}` } })).status, 401);
 });
 
 // ---------- session cookies ----------
