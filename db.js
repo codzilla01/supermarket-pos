@@ -226,6 +226,74 @@ function migrate(db) {
       CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
     `);
     db.prepare('PRAGMA user_version = 6').run();
+    version = 6;
+  }
+  if (version < 7) {
+    db.exec(`
+      ALTER TABLE products ADD COLUMN cost_price REAL;
+
+      CREATE TABLE suppliers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT,
+        email TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX idx_suppliers_name ON suppliers(name);
+
+      CREATE TABLE purchases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL DEFAULT (datetime('now')),
+        supplier_id INTEGER REFERENCES suppliers(id),
+        invoice_no TEXT NOT NULL DEFAULT '',
+        subtotal REAL NOT NULL DEFAULT 0,
+        tax_rate REAL NOT NULL DEFAULT 0,
+        tax REAL NOT NULL DEFAULT 0,
+        total REAL NOT NULL DEFAULT 0,
+        paid REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'posted' CHECK(status IN ('posted', 'reversed')),
+        note TEXT NOT NULL DEFAULT '',
+        created_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_purchases_date ON purchases(date);
+      CREATE INDEX idx_purchases_supplier ON purchases(supplier_id);
+
+      CREATE TABLE purchase_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id),
+        name TEXT NOT NULL,
+        qty INTEGER NOT NULL,
+        unit_cost REAL NOT NULL,
+        line_total REAL NOT NULL
+      );
+      CREATE INDEX idx_purchase_items_purchase ON purchase_items(purchase_id);
+
+      CREATE TABLE stocktakes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL DEFAULT (datetime('now')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'applied', 'cancelled')),
+        note TEXT NOT NULL DEFAULT '',
+        created_by INTEGER REFERENCES users(id),
+        applied_at TEXT,
+        applied_by INTEGER REFERENCES users(id)
+      );
+
+      CREATE TABLE stocktake_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stocktake_id INTEGER NOT NULL REFERENCES stocktakes(id) ON DELETE CASCADE,
+        product_id INTEGER NOT NULL REFERENCES products(id),
+        name TEXT NOT NULL,
+        expected INTEGER NOT NULL,
+        counted INTEGER,
+        UNIQUE(stocktake_id, product_id)
+      );
+      CREATE INDEX idx_stocktake_items_stocktake ON stocktake_items(stocktake_id);
+    `);
+    db.prepare('PRAGMA user_version = 7').run();
   }
 }
 

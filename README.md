@@ -41,8 +41,11 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
 - **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
 - **Excel/CSV stock import** — admins upload an `.xlsx`/`.xlsm`/`.csv` of products (Arabic or English headers), get a full preview (new / update / skipped / error per line) and confirm before anything is written; Arabic-Indic digits, `14%`/`0.14` tax formats, Arabic categories and units are normalized, existing rows are matched by barcode then name, and a downloadable CSV template is included
+- **Purchases & suppliers** — supplier records (name, phone, email, note, soft-deleted instead of erased) and purchase invoices with multiple lines; receiving an invoice increases stock, recomputes a moving-average unit cost, applies the store tax rate, records what was paid (`paid` / `partial` / `unpaid`) and can be reversed in one click (single-shot, refused if stock is insufficient). Every invoice keeps its number, note and author for auditing
+- **Stocktake** — start a count that snapshots every active product with its expected quantity, enter counted values (with live differences, search and a differences-only filter), save drafts as you go and apply once; applying writes the counted quantities and returns gains/losses, and only one count can be open at a time
 - **Audit trail** — every sensitive action (sign-in and failed sign-ins, password changes, shifts, voids/refunds, product create/update/delete/import, settings, users, backups) is recorded with actor, role, IP, request id and details, and is searchable from the admin-only **Audit log** tab
-- **Automatic backups** — a gzipped JSON snapshot is written every 24 h to `backups/` (7 kept by default, configurable), plus manual "create now" from Settings; each snapshot includes products, sales, shifts, customers, settings, subscription history and the audit log
+- **Automatic backups** — a gzipped JSON snapshot is written every 24 h to `backups/` (7 kept by default, configurable), plus manual "create now" from Settings; each snapshot includes products, sales, shifts, customers, suppliers, purchases, stocktakes, settings, subscription history and the audit log
+- **Encrypted off-site backups** — with `POS_BACKUP_ENCRYPTION_KEY` and `POS_BACKUP_UPLOAD_URL` set, the same snapshot is encrypted with AES-256-GCM (scrypt-derived key) into a `.posbak` container and pushed off the server with retries and an optional bearer token; Settings shows the target and the result of the last upload, and `scripts/restore-backup.js` turns a `.posbak` back into the JSON that Settings → Import accepts
 - **Backups** — JSON export/import of products, sales, sale items, shifts, customers and settings (user credentials are not exported)
 - **Diagnostics & logs** — every response carries `X-Request-Id`, requests are logged with method/path/status/ms/user/IP (text or JSON lines), graceful shutdown on SIGTERM/SIGINT, and the Arabic diagnostics card explains an unreachable API
 - **PWA icons** — real 192/512 PNGs plus maskable and Apple touch icons generated with `npm run icons` (no image tooling required)
@@ -66,6 +69,10 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 | `POS_BACKUP_DIR` | `./backups` next to the DB | Where gzipped snapshots are written |
 | `POS_BACKUP_INTERVAL_HOURS` | `24` | Hours between automatic snapshots |
 | `POS_BACKUP_KEEP` | `7` | How many snapshots to retain |
+| `POS_BACKUP_ENCRYPTION_KEY` | — | Passphrase (16+ chars) for the encrypted `.posbak` container; without it off-site upload stays disabled |
+| `POS_BACKUP_UPLOAD_URL` | — | Where the encrypted container is pushed (any HTTP endpoint that accepts a PUT/POST body) |
+| `POS_BACKUP_UPLOAD_TOKEN` | — | Optional bearer token sent as `Authorization: Bearer …` |
+| `POS_BACKUP_UPLOAD_METHOD` | `PUT` | HTTP method used for the upload |
 | `POS_LOG_FORMAT` | `text` | `json` emits one JSON object per line for log shippers |
 | `POS_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
@@ -74,6 +81,8 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Data & backups
 
 - All data lives in a single SQLite file (`pos.db`, WAL mode). Back it up by copying the file, use **Settings → Export backup** for a portable JSON snapshot, or rely on the automatic gzipped snapshots in `backups/` (listed under **Settings → Automatic backups**).
+- **Encrypted off-site copy**: `POST /api/backups/upload` (or the button in Settings) writes `backup-YYYYMMDD-HHMMSS.posbak` and uploads it to `POS_BACKUP_UPLOAD_URL`. The container is `POSBAK01 | version | salt(16) | iv(12) | tag(16) | AES-256-GCM(gzip(json))` with a scrypt-derived key (N=16384), so a leaked bucket or a stolen file is useless without the passphrase. A failed upload is retried three times (4xx stops immediately) and the outcome is stored in settings and shown in the UI.
+- **Restoring an encrypted copy**: `node scripts/restore-backup.js --file backup-….posbak --key "$POS_BACKUP_ENCRYPTION_KEY" --out restore.json` (add `--check` to print only a summary). Then use **Settings → Import backup** with `restore.json`; suppliers, purchases, purchase items, stocktakes and stocktake items are restored alongside the rest of the data when present.
 - The old demo `data.json` format is no longer used.
 - Subscription dates and audit records are stored in SQLite; the developer console logs successful logins, renewals, suspensions and restorations.
 
@@ -130,6 +139,13 @@ The developer console and its license/audit data live in the same SQLite databas
 - **السجل (Audit log)**: تبويب للمدير يعرض الوقت، المنفّذ ودوره، العملية (بمسمّى عربي)، التفاصيل، والعنوان، مع تصفية حسب نوع العملية وبحث نصي. قاعدة البيانات تحتفظ بمعرّف الطلب `X-Request-Id` لكل عملية، فيمكن ربط أي سطر بسجل الخادم.
 - **النسخ التلقائي**: نسخة مضغوطة `backups/backup-YYYYMMDD-HHMMSS.json.gz` كل 24 ساعة (واحدة فور التشغيل إن لم توجد نسخة حديثة)، ويُحتفظ بأحدث 7 نسخ. تظهر القائمة في **الإعدادات** مع زر «إنشاء نسخة الآن».
 - **السجلات**: كل طلب يُسجَّل بسطر واحد يحتوي المعرّف والمسار والحالة والمدة والمستخدم؛ `POS_LOG_FORMAT=json` للإرسال إلى أدوات التحليل، و`SIGTERM`/`SIGINT` تُغلق الخادم وقاعدة البيانات بأمان.
+
+## المشتريات والجرد والنسخ المشفّر
+
+- **الموردون**: تبويب «المشتريات» يجمع الموردين والفواتير. حذف المورد لا يمسحه بل يعطّله (`active = 0`) حتى تبقى فواتيره وتقاريره سليمة. الأسماء مكرّرة مرفوضة (409).
+- **فاتورة مشتريات**: بنود متعددة (صنف، كمية، تكلفة الوحدة)؛ عند الحفظ تدخل الكميات إلى المخزون ويُحدَّث متوسط تكلفة الوحدة، وتُطبَّق نسبة الضريبة الافتراضية أو نسبة مخصّصة، ويُسجَّل المدفوع للمورد. عكس الفاتورة يخصم الكميات فورًا، مرة واحدة فقط، ويُرفض إن كان المخزون لا يكفي (409).
+- **الجرد**: «بدء جرد جديد» يأخذ لقطة لكل صنف نشط مع الكمية المتوقعة. أدخل الكميات الفعلية (يظهر الفرق مباشرة، مع بحث ومرشّح «الفروق فقط»)، احفظ مسوّدة، ثم «تطبيق الجرد» لكتابة الكميات الفعلية. جرد واحد مفتوح في كل مرة، وكل ذلك مسجّل في سجل التدقيق.
+- **النسخ المشفّر خارج الخادم**: اضبط `POS_BACKUP_ENCRYPTION_KEY` (16 حرفًا أو أكثر) و`POS_BACKUP_UPLOAD_URL` (واختياريًا `POS_BACKUP_UPLOAD_TOKEN` و`POS_BACKUP_UPLOAD_METHOD`)، ثم استخدم زر «رفع نسخة مشفّرة الآن» في الإعدادات. الملف الناتج `.posbak` مشفّر بـ AES-256-GCM، ولا يمكن فتحه بدون المفتاح: `node scripts/restore-backup.js --file x.posbak --key "…" --check`. المفاتيح لا تُكتب في الكود ولا تُرفع إلى Git.
 
 ## Deployment notes
 

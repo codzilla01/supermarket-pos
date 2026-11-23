@@ -60,8 +60,10 @@
   <nav class="tabs">
     <button class="tab active" data-view="pos" data-i18n="nav.pos">🧾 نقطة البيع</button>
     <button class="tab" data-view="inventory" data-i18n="nav.inventory">📦 المخزون</button>
+    <button class="tab admin-only" data-view="purchases" data-i18n="nav.purchases">🛒 المشتريات</button>
     <button class="tab" data-view="sales" data-i18n="nav.sales">📊 المبيعات</button>
     <button class="tab" data-view="customers" data-i18n="nav.customers">👥 العملاء</button>
+    <button class="tab admin-only" data-view="stocktake" data-i18n="nav.stocktake">📋 الجرد</button>
     <button class="tab admin-only" data-view="settings" data-i18n="nav.settings">⚙️ الإعدادات</button>
     <button class="tab admin-only" data-view="audit" data-i18n="nav.audit">🗂️ السجل</button>
     <button class="tab subscription-tab" data-view="subscription" data-i18n="nav.subscription">💳 الاشتراك</button>
@@ -174,6 +176,54 @@
   </section>
 </main>
 
+<!-- ============ PURCHASES VIEW ============ -->
+<main id="view-purchases" class="view">
+  <div class="page-head">
+    <h2><span data-i18n="pur.title">🛒 المشتريات والموردون</span></h2>
+    <div class="head-actions">
+      <button class="btn ghost admin-only" id="add-supplier-btn" data-i18n="sup.add">＋ مورد</button>
+      <button class="btn primary admin-only" id="add-purchase-btn" data-i18n="pur.new">＋ فاتورة مشتريات</button>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <section class="card">
+      <h3 data-i18n="sup.title">🏭 الموردون</h3>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th data-i18n="sup.name">المورد</th>
+          <th data-i18n="sup.phone">الهاتف</th>
+          <th data-i18n="sup.purchases">فواتير</th>
+          <th data-i18n="sup.balance">المستحق</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="suppliers-body"></tbody>
+      </table></div>
+    </section>
+    <section class="card">
+      <h3 data-i18n="pur.summaryTitle">📊 ملخص المشتريات</h3>
+      <div class="stat-row" id="purchase-stats"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h3 data-i18n="pur.listTitle">🧾 فواتير المشتريات</h3>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th data-i18n="pur.colDate">التاريخ</th>
+        <th data-i18n="pur.colSupplier">المورد</th>
+        <th data-i18n="pur.colInvoice">رقم الفاتورة</th>
+        <th data-i18n="pur.colItems">بنود</th>
+        <th data-i18n="pur.colTotal">الإجمالي</th>
+        <th data-i18n="pur.colPaid">المدفوع</th>
+        <th data-i18n="pur.colStatus">الحالة</th>
+        <th></th>
+      </tr></thead>
+      <tbody id="purchases-body"></tbody>
+    </table></div>
+  </section>
+</main>
+
 <!-- ============ SALES VIEW ============ -->
 <main id="view-sales" class="view">
   <div class="page-head"><h2 data-i18n="sales.title">📊 المبيعات والتقارير</h2>
@@ -215,6 +265,53 @@
     <thead><tr><th data-i18n="col.name">الاسم</th><th data-i18n="col.phone">الهاتف</th><th data-i18n="col.email">البريد</th><th data-i18n="col.points">النقاط</th><th data-i18n="col.memberSince">عضو منذ</th><th class="admin-only"></th></tr></thead>
     <tbody id="cust-body"></tbody>
   </table></div>
+</main>
+
+<!-- ============ STOCKTAKE VIEW ============ -->
+<main id="view-stocktake" class="view">
+  <div class="page-head">
+    <h2><span data-i18n="stk.title">📋 جرد المخزون</span> <span class="muted" id="stk-status"></span></h2>
+    <div class="head-actions">
+      <button class="btn primary admin-only" id="stk-start" data-i18n="stk.start">＋ بدء جرد جديد</button>
+      <button class="btn ghost" id="stk-cancel" hidden data-i18n="stk.cancel">إلغاء الجرد</button>
+      <button class="btn primary" id="stk-apply" hidden data-i18n="stk.apply">✅ تطبيق الجرد</button>
+    </div>
+  </div>
+
+  <section class="card" id="stk-active" hidden>
+    <div class="import-controls">
+      <input id="stk-search" data-i18n-placeholder="stk.search" placeholder="بحث عن صنف…" />
+      <label class="inline-check"><input type="checkbox" id="stk-only-diff" /> <span data-i18n="stk.onlyDiff">الفروق فقط</span></label>
+      <button class="btn ghost small" id="stk-save" data-i18n="stk.save">💾 حفظ المعدود</button>
+      <span class="muted small" id="stk-summary"></span>
+    </div>
+    <div class="table-wrap import-table">
+      <table>
+        <thead><tr>
+          <th data-i18n="col.product">الصنف</th>
+          <th data-i18n="stk.expected">المتوقع</th>
+          <th data-i18n="stk.counted">الفعلي</th>
+          <th data-i18n="stk.diff">الفرق</th>
+        </tr></thead>
+        <tbody id="stk-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3 data-i18n="stk.history">🗂️ جرد سابق</h3>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th data-i18n="pur.colDate">التاريخ</th>
+        <th data-i18n="stk.items">أصناف</th>
+        <th data-i18n="stk.countedCol">معدود</th>
+        <th data-i18n="stk.diffCol">فروق</th>
+        <th data-i18n="stk.net">صافي الفرق</th>
+        <th data-i18n="pur.colStatus">الحالة</th>
+      </tr></thead>
+      <tbody id="stk-history"></tbody>
+    </table></div>
+  </section>
 </main>
 
 <!-- ============ SETTINGS VIEW ============ -->
@@ -264,6 +361,11 @@
         <button class="btn ghost" id="backup-run" data-i18n="set.backupRun">＋ إنشاء نسخة الآن</button>
       </div>
       <ul class="backup-list" id="backups-list"></ul>
+      <h3 style="margin-top:24px" data-i18n="set.offsite">🔐 نسخ خارجي مشفّر</h3>
+      <p class="muted small" id="offsite-note"></p>
+      <div class="head-actions">
+        <button class="btn ghost" id="offsite-upload" data-i18n="set.offsiteUpload">⬆ رفع نسخة مشفّرة الآن</button>
+      </div>
     </section>
   </div>
   <section class="card"><h3 data-i18n="set.users">👤 المستخدمون والأدوار</h3>
@@ -414,6 +516,7 @@
     </div>
     <label><span data-i18n="prod.barcode">الباركود</span> <input id="f-barcode" data-i18n-placeholder="prod.barcodePlaceholder" placeholder="يُنشأ تلقائيًا إذا تُرك فارغًا" /></label>
     <label><span data-i18n="prod.taxRate">ضريبة المنتج (0–1؛ فارغ = الافتراضي)</span> <input id="f-tax-rate" type="number" min="0" max="1" step="0.01" /></label>
+    <label><span data-i18n="prod.cost">تكلفة الوحدة (اختياري — تُحدَّث من فواتير المشتريات)</span> <input id="f-cost" type="number" min="0" step="0.01" /></label>
     <div class="modal-actions">
       <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
       <button type="submit" class="btn primary" data-i18n="prod.save">حفظ المنتج</button>
@@ -451,5 +554,61 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="app.js"></script>
+<!-- ============ SUPPLIER MODAL ============ -->
+<div class="modal-backdrop" id="supplier-modal" hidden>
+  <form class="modal" id="supplier-form">
+    <h2 id="supplier-form-title" data-i18n="sup.add">إضافة مورد</h2>
+    <input type="hidden" id="sup-id" />
+    <label><span data-i18n="sup.name">المورد</span> <input id="sup-name" required /></label>
+    <div class="form-row">
+      <label><span data-i18n="sup.phone">الهاتف</span> <input id="sup-phone" inputmode="tel" /></label>
+      <label><span data-i18n="sup.email">البريد</span> <input id="sup-email" type="email" /></label>
+    </div>
+    <label><span data-i18n="sup.note">ملاحظة</span> <input id="sup-note" /></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button type="submit" class="btn primary" data-i18n="sup.save">حفظ المورد</button>
+    </div>
+  </form>
+</div>
+
+<!-- ============ PURCHASE MODAL ============ -->
+<div class="modal-backdrop" id="purchase-modal" hidden>
+  <form class="modal modal-wide" id="purchase-form">
+    <h2 data-i18n="pur.new">فاتورة مشتريات</h2>
+    <div class="form-row">
+      <label><span data-i18n="pur.colSupplier">المورد</span>
+        <select id="pur-supplier"><option value="" data-i18n="pur.noSupplier">بدون مورد</option></select>
+      </label>
+      <label><span data-i18n="pur.invoiceNo">رقم فاتورة المورد</span> <input id="pur-invoice" /></label>
+    </div>
+    <h3 class="sub-head" data-i18n="pur.lines">🧾 البنود</h3>
+    <div id="pur-lines"></div>
+    <button type="button" class="btn ghost small" id="pur-add-line" data-i18n="pur.addLine">＋ إضافة بند</button>
+    <div class="purchase-totals" id="pur-totals"></div>
+    <div class="form-row">
+      <label><span data-i18n="pur.paid">المدفوع للمورد</span> <input id="pur-paid" type="number" min="0" step="0.01" value="0" /></label>
+      <label><span data-i18n="pur.taxRate">الضريبة المطبّقة</span> <input id="pur-tax" type="number" min="0" max="1" step="0.01" /></label>
+    </div>
+    <label><span data-i18n="pur.note">ملاحظة</span> <input id="pur-note" /></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button type="submit" class="btn primary" data-i18n="pur.save">حفظ واستلام البضاعة</button>
+    </div>
+  </form>
+</div>
+
+<!-- ============ PURCHASE DETAIL MODAL ============ -->
+<div class="modal-backdrop" id="purchase-detail-modal" hidden>
+  <div class="modal modal-wide">
+    <h2 id="pur-detail-title" data-i18n="pur.detailTitle">تفاصيل الفاتورة</h2>
+    <div id="pur-detail-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn danger" id="pur-reverse" data-i18n="pur.reverse">↩️ عكس الفاتورة</button>
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إغلاق</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

@@ -282,6 +282,166 @@ test('backups run at startup, are listed and are pruned to the retention limit',
   assert.ok(audited.data.entries.length >= 2);
 });
 
+// ---------- suppliers, purchases, stocktake ----------
+test('suppliers are validated, deduplicated, editable and deactivated', async () => {
+  const created = await req('POST', '/api/suppliers', { name: 'شركة الدلتا للتوزيع', phone: '01000000000' });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.name, 'شركة الدلتا للتوزيع');
+  assert.equal(created.data.active, 1);
+
+  const duplicate = await req('POST', '/api/suppliers', { name: 'شركة الدلتا للتوزيع' });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.data.code, 'SUPPLIER_EXISTS');
+  assert.equal((await req('POST', '/api/suppliers', { name: '   ' })).status, 400);
+
+  const updated = await req('PUT', `/api/suppliers/${created.data.id}`, { name: 'شركة الدلتا للتوزيع', email: 'ap@delta.example' });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.data.email, 'ap@delta.example');
+
+  const removed = await req('DELETE', `/api/suppliers/${created.data.id}`);
+  assert.equal(removed.status, 200);
+  const list = await req('GET', '/api/suppliers');
+  const row = list.data.find(s => s.id === created.data.id);
+  assert.equal(row.active, 0, 'deleting only deactivates the supplier');
+
+  const audited = await req('GET', '/api/audit?action=supplier_created');
+  assert.ok(audited.data.entries.length >= 1);
+});
+
+test('a purchase invoice restocks products, averages the cost and reverses cleanly', async () => {
+  const supplier = await req('POST', '/api/suppliers', { name: 'مورد المشتريات' });
+  assert.equal(supplier.status, 201);
+  const products = (await req('GET', '/api/products')).data;
+  const a = products[0];
+  const b = products[1];
+
+  const created = await req('POST', '/api/purchases', {
+    supplierId: supplier.data.id,
+    invoiceNo: 'INV-77',
+    items: [
+      { productId: a.id, qty: 10, unitCost: 15 },
+      { productId: b.id, qty: 5, unitCost: 18.5 },
+    ],
+    paid: 100,
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.subtotal, 242.5);
+  assert.equal(created.data.tax, 19.4);
+  assert.equal(created.data.total, 261.9);
+  assert.equal(created.data.payment_status, 'partial');
+  assert.equal(created.data.supplier_name, 'مورد المشتريات');
+
+  const restocked = (await req('GET', '/api/products')).data;
+  const after = restocked.find(p => p.id === a.id);
+  assert.equal(after.stock, a.stock + 10);
+  assert.equal(after.cost_price, 15, 'first purchase sets the unit cost');
+
+  const detail = await req('GET', `/api/purchases/${created.data.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.data.items.length, 2);
+
+  const reversed = await req('POST', `/api/purchases/${created.data.id}/reverse`, {});
+  assert.equal(reversed.status, 200);
+  const back = (await req('GET', '/api/products')).data.find(p => p.id === a.id);
+  assert.equal(back.stock, a.stock);
+  assert.equal((await req('POST', `/api/purchases/${created.data.id}/reverse`, {})).status, 409);
+  assert.equal((await req('GET', `/api/purchases/${created.data.id}`)).data.status, 'reversed');
+});
+
+test('a stocktake snapshots the stock, takes counts and applies them', async () => {
+  const started = await req('POST', '/api/stocktakes', {});
+  assert.equal(started.status, 201);
+  const draft = await req('GET', `/api/stocktakes/${started.data.id}`);
+  assert.equal(draft.data.status, 'draft');
+  assert.ok(draft.data.items.length >= 30, 'every active product is snapshotted');
+  assert.equal((await req('POST', '/api/stocktakes', {})).status, 409, 'only one open stocktake');
+
+  const first = draft.data.items[0];
+  const saved = await req('PUT', `/api/stocktakes/${started.data.id}/items`, {
+    items: [{ productId: first.product_id, counted: first.expected + 3 }],
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.saved, 1);
+
+  const applied = await req('POST', `/api/stocktakes/${started.data.id}/apply`, {});
+  assert.equal(typeof applied.data.counted, 'number');
+  assert.equal(applied.status, 200);
+  assert.equal(applied.data.counted, 1);
+  assert.equal(applied.data.gains, 1);
+  assert.equal(applied.data.unitsIn, 3);
+
+  const product = (await req('GET', '/api/products')).data.find(p => p.id === first.product_id);
+  assert.equal(product.stock, first.expected + 3);
+  assert.equal((await req('POST', `/api/stocktakes/${started.data.id}/apply`, {})).status, 409);
+  const list = await req('GET', '/api/stocktakes');
+  assert.equal(list.data.find(s => s.id === started.data.id).status, 'applied');
+});
+
+test('off-site upload is refused until it is configured', async () => {
+  const status = await req('GET', '/api/backups');
+  assert.equal(status.data.offsite.configured, false);
+  assert.equal(status.data.offsite.key_configured, false);
+  const upload = await req('POST', '/api/backups/upload', {});
+  assert.equal(upload.status, 409);
+  assert.equal(upload.data.code, 'OFFSITE_NOT_CONFIGURED');
+});
+
+test('the encrypted container round-trips and the restore CLI reads it back', async () => {
+  const { encrypt, decrypt, isEncrypted } = require('../lib/backup-crypto');
+  const { uploadOffsite } = require('../lib/backup');
+  const http = require('http');
+
+  const key = 'test-offsite-passphrase-2026';
+  const payload = Buffer.from(JSON.stringify({ products: [{ id: 1 }], audit_log: [] }), 'utf8');
+  const container = encrypt(payload, key);
+  assert.ok(isEncrypted(container));
+  assert.deepEqual(JSON.parse(decrypt(container, key).toString('utf8')), JSON.parse(payload.toString('utf8')));
+  assert.throws(() => decrypt(container, 'another-passphrase'), /WRONG_KEY_OR_CORRUPT/);
+
+  let received = null;
+  let authHeader = '';
+  const receiver = http.createServer((request, response) => {
+    const chunks = [];
+    authHeader = request.headers.authorization || '';
+    request.on('data', c => chunks.push(c));
+    request.on('end', () => {
+      received = Buffer.concat(chunks);
+      response.writeHead(201);
+      response.end('ok');
+    });
+  });
+  await new Promise(resolve => receiver.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${receiver.address().port}/upload`;
+
+  const schema = require('../db');
+  const offsiteDb = schema.openDb(path.join(os.tmpdir(), `pos-offsite-${Date.now()}.db`));
+  schema.seed(offsiteDb, () => 'hash', 'off-site-test-admin-secret-2026');
+  const result = await uploadOffsite({
+    db: offsiteDb,
+    getSettings: () => ({ receipt_footer: 'off-site test' }),
+    passphrase: key,
+    url,
+    token: 'secret-token',
+  });
+  receiver.close();
+  assert.equal(result.ok, true);
+  assert.match(result.file, /^backup-\d{8}-\d{6}\.posbak$/);
+  assert.equal(authHeader, 'Bearer secret-token');
+  assert.ok(received.length > 500, 'the compressed container was uploaded');
+
+  const file = path.join(os.tmpdir(), result.file);
+  fs.writeFileSync(file, received);
+  const out = path.join(os.tmpdir(), `restore-${Date.now()}.json`);
+  const { execFileSync } = require('child_process');
+  execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'restore-backup.js'), '--file', file, '--key', key, '--out', out], { stdio: 'pipe' });
+  const restored = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(restored.products.length >= 30);
+  assert.equal(restored.settings.receipt_footer, 'off-site test');
+  fs.unlinkSync(file);
+  fs.unlinkSync(out);
+  offsiteDb.close();
+});
+
 // ---------- logging ----------
 test('every response carries a request id and requests are logged as JSON', async () => {
   const res = await fetch(BASE + '/healthz');

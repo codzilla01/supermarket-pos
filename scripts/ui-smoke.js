@@ -88,6 +88,20 @@ async function main() {
         if (setCookie) jar = setCookie.split(';')[0];
         return res;
       };
+      // Older jsdom builds ship Blob/File without the Blob promise helpers the app uses.
+      const readAs = (blob, as) => new Promise((resolve, reject) => {
+        const reader = new window.FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        if (as === 'text') reader.readAsText(blob);
+        else if (as === 'dataurl') reader.readAsDataURL(blob);
+        else reader.readAsArrayBuffer(blob);
+      });
+      for (const proto of [window.Blob.prototype, window.File.prototype]) {
+        if (typeof proto.arrayBuffer !== 'function') proto.arrayBuffer = function () { return readAs(this, 'buffer'); };
+        if (typeof proto.text !== 'function') proto.text = function () { return readAs(this, 'text'); };
+      }
+      window.__readAsDataUrl = blob => readAs(blob, 'dataurl');
     },
   });
   const { window } = dom;
@@ -129,7 +143,7 @@ async function main() {
   $('#import-file').dispatchEvent(new window.Event('change', { bubbles: true }));
   await wait(1800);
   const rowsBeforeApply = $$('#import-body tr').length;
-  check('preview lists the uploaded rows', rowsBeforeApply === 2, `${rowsBeforeApply} rows`);
+  check('preview lists the uploaded rows', rowsBeforeApply === 2, `${rowsBeforeApply} rows · ${$('#import-status').textContent.trim()}`);
   check('preview shows the summary', /جديد: 2/.test($('#import-summary').textContent), $('#import-summary').textContent.trim());
 
   $('#import-apply').click();
@@ -158,12 +172,80 @@ async function main() {
   await wait(1800);
   check('manual backup creates a file', $$('#backups-list li').length > backupsBefore);
 
+  // ---- purchases & suppliers ----
+  tab('purchases').click();
+  await wait(1200);
+  check('purchases view opens', !!$('#suppliers-body') && $$('.tab').find(t => t.dataset.view === 'purchases').classList.contains('active'));
+  check('empty supplier list is explained', /مورد/.test($('#suppliers-body').textContent), $('#suppliers-body').textContent.trim().slice(0, 40));
+
+  $('#add-supplier-btn').click();
+  await wait(300);
+  $('#sup-name').value = 'شركة النيل للتوزيع';
+  $('#sup-phone').value = '01001234567';
+  submit('#supplier-form');
+  await wait(1400);
+  check('supplier is created', /شركة النيل/.test($('#suppliers-body').textContent));
+
+  const productsBefore = await (await window.fetch('/api/products')).json();
+  const target = productsBefore[0];
+  $('#add-purchase-btn').click();
+  await wait(400);
+  const lines = $$('#pur-lines .purchase-line');
+  check('purchase form starts with two lines', lines.length === 2);
+  const firstProduct = lines[0].querySelector('.pl-product');
+  firstProduct.value = String(target.id);
+  firstProduct.dispatchEvent(new window.Event('change', { bubbles: true }));
+  $('#pur-supplier').value = [...$('#pur-supplier').options].find(o => o.textContent.includes('شركة النيل'))?.value || '';
+  lines[0].querySelector('.pl-qty').value = '5';
+  lines[0].querySelector('.pl-cost').value = '10';
+  lines[0].querySelector('.pl-qty').dispatchEvent(new window.Event('input', { bubbles: true }));
+  await wait(200);
+  check('purchase totals are calculated', /ج\.م/.test($('#pur-totals').textContent), $('#pur-totals').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
+  submit('#purchase-form');
+  await wait(2000);
+  check('purchase appears in the invoice list', $$('#purchases-body tr').length >= 1 && /شركة النيل/.test($('#purchases-body').textContent));
+  check('purchase save reported success', /استلام البضاعة/.test($('#toast').textContent), $('#toast').textContent.trim().slice(0, 90));
+  const productsAfter = await (await window.fetch('/api/products')).json();
+  const restocked = productsAfter.find(p => p.id === target.id);
+  check('purchase increases stock', restocked.stock === target.stock + 5, `${target.name}: ${target.stock} → ${restocked.stock}`);
+  check('purchase sets the unit cost', Number(restocked.cost_price) === 10, `cost ${restocked.cost_price}`);
+  tab('inventory').click();
+  await wait(800);
+  check('inventory shows the new quantity', $$('#inv-body tr').find(r => r.textContent.includes(target.name))?.textContent.includes(String(restocked.stock)), `${restocked.stock} expected`);
+
+  // ---- stocktake ----
+  tab('stocktake').click();
+  await wait(1200);
+  $('#stk-start').click();
+  await wait(1800);
+  const stkInputs = $$('#stk-body .stk-counted');
+  check('stocktake lists products with expected quantities', stkInputs.length >= 20, `${stkInputs.length} rows`);
+  const firstInput = stkInputs[0];
+  const expected = Number(firstInput.closest('tr').children[1].textContent.trim());
+  firstInput.value = String(expected + 2);
+  firstInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await wait(300);
+  check('stocktake shows the difference live', /\+2/.test(firstInput.closest('tr').textContent), firstInput.closest('tr').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
+  $('#stk-save').click();
+  await wait(1200);
+  window.confirm = () => true;
+  $('#stk-apply').click();
+  await wait(2200);
+  const applied = $$('#stk-history tr').find(r => /مطبَّق|مطبّق/.test(r.textContent));
+  check('stocktake is applied and recorded', !!applied, applied ? applied.textContent.replace(/\s+/g, ' ').trim().slice(0, 60) : $('#stk-history').textContent.trim().slice(0, 80));
+
+  // ---- off-site backup status ----
+  tab('settings').click();
+  await wait(1400);
+  check('off-site backup explains how to enable it', /POS_BACKUP_UPLOAD_URL/.test($('#offsite-note').textContent), $('#offsite-note').textContent.trim().slice(0, 60));
+
   $('[data-lang-toggle]').click();
   await wait(700);
   check('English toggle switches direction', window.document.documentElement.dir === 'ltr');
   tab('inventory').click();
   await wait(600);
   check('English translations cover the new views', /Import stock from Excel/.test($('#import-card h3').textContent));
+  check('English tab names are translated', /Purchases/.test(tab('purchases').textContent) && /Stocktake/.test(tab('stocktake').textContent));
 
   check('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
