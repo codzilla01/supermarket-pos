@@ -546,6 +546,7 @@ async function handleApi(req, res, url) {
         product_id: prod.id, name: prod.name, emoji: prod.emoji, price: prod.price,
         qty: int(it.qty), line_total: round2(prod.price * int(it.qty)),
         tax_rate: prod.tax_rate == null ? taxRate : Number(prod.tax_rate),
+        cost_price: prod.cost_price == null ? null : Number(prod.cost_price),
       };
     });
     const subtotal = round2(saleItems.reduce((s, i) => s + i.line_total, 0));
@@ -596,10 +597,10 @@ async function handleApi(req, res, url) {
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(user.id, shift.register, shift.id, subtotal, discountPct, discount, tax, total, payment, tendered, change, customer?.id ?? null, pointsEarned, pointsRedeemed, null, idempotencyKey);
       saleId = info.lastInsertRowid;
-      const insItem = db.prepare('INSERT INTO sale_items(sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      const insItem = db.prepare('INSERT INTO sale_items(sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax, cost_price) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       const decStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?');
       for (const i of saleItems) {
-        insItem.run(saleId, i.product_id, i.name, i.emoji, i.price, i.qty, i.line_total, i.tax_rate, i.tax);
+        insItem.run(saleId, i.product_id, i.name, i.emoji, i.price, i.qty, i.line_total, i.tax_rate, i.tax, i.cost_price);
         const update = decStock.run(i.qty, i.product_id, i.qty);
         if (update.changes !== 1) throw new Error(`Stock changed during sale for ${i.name}`);
       }
@@ -684,6 +685,58 @@ async function handleApi(req, res, url) {
     });
   }
 
+  // ----- VAT report (admin) -----
+  if (p === '/api/reports/vat' && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const days = Math.min(366, Math.max(1, int(url.searchParams.get('days'), 30)));
+    const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    const sales = db.prepare(`
+      SELECT date(date) AS day, COUNT(*) AS invoices, COALESCE(SUM(total - tax), 0) AS taxable, COALESCE(SUM(tax), 0) AS tax
+      FROM sales WHERE status = 'completed' AND date(date) >= date(?)
+      GROUP BY date(date) ORDER BY day`).all(from);
+    const purchases = db.prepare(`
+      SELECT date(date) AS day, COUNT(*) AS invoices, COALESCE(SUM(subtotal), 0) AS taxable, COALESCE(SUM(tax), 0) AS tax
+      FROM purchases WHERE status = 'posted' AND date(date) >= date(?)
+      GROUP BY date(date) ORDER BY day`).all(from);
+    const byDay = new Map();
+    const bucket = day => {
+      if (!byDay.has(day)) byDay.set(day, { day, output_tax: 0, input_tax: 0, sales_taxable: 0, purchases_taxable: 0, sales_invoices: 0, purchase_invoices: 0 });
+      return byDay.get(day);
+    };
+    for (const row of sales) {
+      const b = bucket(row.day);
+      b.output_tax = round2(b.output_tax + row.tax);
+      b.sales_taxable = round2(b.sales_taxable + row.taxable);
+      b.sales_invoices += row.invoices;
+    }
+    for (const row of purchases) {
+      const b = bucket(row.day);
+      b.input_tax = round2(b.input_tax + row.tax);
+      b.purchases_taxable = round2(b.purchases_taxable + row.taxable);
+      b.purchase_invoices += row.invoices;
+    }
+    const totals = {
+      output_tax: round2(sales.reduce((sum, row) => sum + row.tax, 0)),
+      input_tax: round2(purchases.reduce((sum, row) => sum + row.tax, 0)),
+      sales_taxable: round2(sales.reduce((sum, row) => sum + row.taxable, 0)),
+      purchases_taxable: round2(purchases.reduce((sum, row) => sum + row.taxable, 0)),
+      sales_invoices: sales.reduce((sum, row) => sum + row.invoices, 0),
+      purchase_invoices: purchases.reduce((sum, row) => sum + row.invoices, 0),
+    };
+    totals.net_payable = round2(totals.output_tax - totals.input_tax);
+    const settings = getSettings(db);
+    const days$ = [...byDay.values()]
+      .map(row => ({ ...row, net: round2(row.output_tax - row.input_tax) }))
+      .sort((a, b) => (a.day < b.day ? 1 : -1));
+    return sendJson(res, 200, {
+      window: { days, from, to: new Date().toISOString().slice(0, 10) },
+      currency: settings.currency_code || 'EGP',
+      default_rate: Number(settings.tax_rate) || 0,
+      totals,
+      days: days$,
+    });
+  }
+
   // ----- Profit report (admin) -----
   if (p === '/api/reports/profit' && method === 'GET') {
     if (!requireAdmin(user, res)) return;
@@ -691,8 +744,11 @@ async function handleApi(req, res, url) {
     const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
     const sales = db.prepare("SELECT id, date, subtotal, tax, total FROM sales WHERE status = 'completed' AND date(date) >= date(?) ORDER BY date").all(from);
     const costById = new Map(db.prepare('SELECT id, cost_price FROM products').all().map(row => [row.id, row.cost_price]));
-    const itemsStmt = db.prepare('SELECT product_id, name, emoji, qty, line_total FROM sale_items WHERE sale_id = ?');
-    const totals = { sales: 0, qty: 0, revenue: 0, cost: 0, profit: 0, margin: null, unpriced_items: 0 };
+    const itemsStmt = db.prepare(`SELECT i.product_id, i.name, i.emoji, i.qty, i.line_total,
+        i.cost_price AS item_cost, p.cost_price AS product_cost
+      FROM sale_items i LEFT JOIN products p ON p.id = i.product_id
+      WHERE i.sale_id = ?`);
+    const totals = { sales: 0, qty: 0, revenue: 0, cost: 0, profit: 0, margin: null, unpriced_items: 0, legacy_items: 0 };
     const dayMap = new Map();
     const productMap = new Map();
     const bump = (target, revenue, cost, qty) => {
@@ -711,7 +767,11 @@ async function handleApi(req, res, url) {
       bucket.sales += 1;
       totals.sales += 1;
       for (const item of itemsStmt.all(sale.id)) {
-        const costPrice = item.product_id != null ? Number(costById.get(item.product_id)) : 0;
+        // Prefer the cost captured at sale time; fall back to the product's cost
+        // for lines recorded before snapshots existed.
+        const snapshotCost = item.item_cost == null ? null : Number(item.item_cost);
+        if (snapshotCost == null) totals.legacy_items += item.qty;
+        const costPrice = snapshotCost != null ? snapshotCost : (item.product_id != null ? Number(costById.get(item.product_id)) : 0);
         const known = Number.isFinite(costPrice) && costPrice > 0;
         if (!known) totals.unpriced_items += item.qty;
         const revenue = round2(item.line_total * share);
@@ -731,7 +791,7 @@ async function handleApi(req, res, url) {
     finalize(totals);
     return sendJson(res, 200, {
       window: { days, from, to: new Date().toISOString().slice(0, 10) },
-      cost_source: 'current',
+      cost_source: totals.legacy_items ? 'mixed' : 'snapshot',
       totals,
       days: [...dayMap.values()].map(finalize).sort((a, b) => (a.day < b.day ? 1 : -1)),
       products: [...productMap.values()].map(finalize).sort((a, b) => b.profit - a.profit).slice(0, 10),
@@ -840,6 +900,12 @@ async function handleApi(req, res, url) {
       sale_items: db.prepare('SELECT * FROM sale_items').all(),
       shifts: db.prepare('SELECT * FROM shifts').all(),
       settings: getSettings(db),
+      suppliers: db.prepare('SELECT * FROM suppliers ORDER BY id').all(),
+      purchases: db.prepare('SELECT * FROM purchases ORDER BY id').all(),
+      purchase_items: db.prepare('SELECT * FROM purchase_items ORDER BY id').all(),
+      supplier_payments: db.prepare('SELECT * FROM supplier_payments ORDER BY id').all(),
+      stocktakes: db.prepare('SELECT * FROM stocktakes ORDER BY id').all(),
+      stocktake_items: db.prepare('SELECT * FROM stocktake_items ORDER BY id').all(),
     };
     return sendJson(res, 200, dump);
   }
@@ -847,8 +913,16 @@ async function handleApi(req, res, url) {
     if (!requireAdmin(user, res)) return;
     const b = await readBody(req);
     if (!Array.isArray(b.products) || !Array.isArray(b.sales)) return sendJson(res, 400, { error: 'Invalid backup file', messageAr: 'ملف النسخة الاحتياطية غير صالح' });
+    // Rows are reloaded with their original ids, so integrity is checked once at the end.
+    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN');
     try {
+      // Purchasing rows reference products and suppliers, so clear them first —
+      // and only when the file carries that data, so an older export cannot wipe it.
+      const hasPurchasing = Array.isArray(b.suppliers) || Array.isArray(b.purchases) || Array.isArray(b.supplier_payments);
+      if (hasPurchasing) {
+        db.exec('DELETE FROM supplier_payments; DELETE FROM purchase_items; DELETE FROM purchases; DELETE FROM stocktake_items; DELETE FROM stocktakes; DELETE FROM suppliers;');
+      }
       db.exec('DELETE FROM sale_items; DELETE FROM sales; DELETE FROM shifts; DELETE FROM customers; DELETE FROM products;');
       const insP = db.prepare('INSERT INTO products(id, name, category, price, unit, stock, barcode, emoji, active, tax_rate) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       for (const x of b.products) insP.run(x.id, x.name, x.category, x.price, x.unit, x.stock, x.barcode, x.emoji, x.active ?? 1, x.tax_rate ?? null);
@@ -858,11 +932,10 @@ async function handleApi(req, res, url) {
       for (const x of (b.shifts || [])) insShift.run(x.id, x.cashier_id, x.register, x.opening_float, x.expected_cash, x.closing_amount, x.opened_at, x.closed_at, x.status);
       const insS = db.prepare('INSERT INTO sales(id, date, cashier_id, register, shift_id, subtotal, discount_pct, discount, tax, total, payment, tendered, change, status, customer_id, points_earned, points_redeemed, payment_intent_id, stripe_refund_id, idempotency_key) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
       for (const x of b.sales) insS.run(x.id, x.date, x.cashier_id, x.register, x.shift_id, x.subtotal, x.discount_pct, x.discount, x.tax, x.total, x.payment, x.tendered, x.change, x.status, x.customer_id, x.points_earned, x.points_redeemed, x.payment_intent_id ?? null, x.stripe_refund_id ?? null, x.idempotency_key ?? null);
-      const insI = db.prepare('INSERT INTO sale_items(id, sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-      for (const x of (b.sale_items || [])) insI.run(x.id, x.sale_id, x.product_id, x.name, x.emoji, x.price, x.qty, x.line_total, x.tax_rate ?? null, x.tax ?? null);
+      const insI = db.prepare('INSERT INTO sale_items(id, sale_id, product_id, name, emoji, price, qty, line_total, tax_rate, tax, cost_price) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const x of (b.sale_items || [])) insI.run(x.id, x.sale_id, x.product_id, x.name, x.emoji, x.price, x.qty, x.line_total, x.tax_rate ?? null, x.tax ?? null, x.cost_price ?? null);
       // Suppliers, purchases and stocktakes are restored when the file has them;
       // older backups (without these keys) keep working unchanged.
-      db.exec('DELETE FROM purchase_items; DELETE FROM purchases; DELETE FROM stocktakes; DELETE FROM stocktake_items; DELETE FROM suppliers;');
       if (Array.isArray(b.suppliers)) {
         const insSup = db.prepare('INSERT INTO suppliers(id, name, phone, email, note, active, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)');
         for (const x of b.suppliers) insSup.run(x.id, x.name, x.phone ?? null, x.email ?? '', x.note ?? '', x.active ?? 1, x.created_at ?? new Date().toISOString());
@@ -873,6 +946,12 @@ async function handleApi(req, res, url) {
         const insPItem = db.prepare('INSERT INTO purchase_items(id, purchase_id, product_id, name, qty, unit_cost, line_total) VALUES(?, ?, ?, ?, ?, ?, ?)');
         for (const x of (b.purchase_items || [])) insPItem.run(x.id, x.purchase_id, x.product_id ?? null, x.name, x.qty, x.unit_cost, x.line_total);
       }
+      if (Array.isArray(b.supplier_payments)) {
+        const insPay = db.prepare('INSERT INTO supplier_payments(id, supplier_id, purchase_id, date, amount, method, reference, note, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        for (const x of b.supplier_payments) {
+          insPay.run(x.id, x.supplier_id, x.purchase_id ?? null, x.date, x.amount, x.method ?? 'cash', x.reference ?? '', x.note ?? '', x.created_by ?? null, x.created_at ?? x.date);
+        }
+      }
       if (Array.isArray(b.stocktakes)) {
         const insSt = db.prepare('INSERT INTO stocktakes(id, date, status, note, created_by, applied_at, applied_by) VALUES(?, ?, ?, ?, ?, ?, ?)');
         for (const x of b.stocktakes) insSt.run(x.id, x.date, x.status ?? 'draft', x.note ?? '', x.created_by ?? null, x.applied_at ?? null, x.applied_by ?? null);
@@ -881,7 +960,14 @@ async function handleApi(req, res, url) {
       }
       if (b.settings) setSettings(db, b.settings);
       db.exec('COMMIT');
-    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    } catch (e) {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+      throw e;
+    }
+    db.exec('PRAGMA foreign_keys = ON');
+    const orphans = db.prepare('PRAGMA foreign_key_check').all();
+    if (orphans.length) log.warn('restored rows reference missing parents', { reqId: req.posRequestId, orphans: orphans.length });
     audit(req, user, 'backup_imported', 'backup', '', { products: b.products.length, sales: b.sales.length });
     return sendJson(res, 200, { ok: true });
   }
@@ -893,8 +979,10 @@ async function handleApi(req, res, url) {
       SELECT s.*,
         (SELECT COUNT(*) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS purchase_count,
         (SELECT COALESCE(SUM(p.total), 0) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS purchase_total,
-        (SELECT COALESCE(SUM(p.total - p.paid), 0) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted') AS balance
-      FROM suppliers s ORDER BY s.active DESC, s.name`).all());
+        (SELECT COALESCE(SUM(sp.amount), 0) FROM supplier_payments sp WHERE sp.supplier_id = s.id) AS payments_total,
+        (SELECT COALESCE(SUM(p.total), 0) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'posted')
+          - (SELECT COALESCE(SUM(sp.amount), 0) FROM supplier_payments sp WHERE sp.supplier_id = s.id) AS balance
+      FROM suppliers s ORDER BY s.active DESC, s.name`).all().map(row => ({ ...row, balance: round2(row.balance) })));
   }
   if (p === '/api/suppliers' && method === 'POST') {
     if (!requireAdmin(user, res)) return;
@@ -911,6 +999,96 @@ async function handleApi(req, res, url) {
       throw e;
     }
   }
+  const supplierPaymentsMatch = p.match(/^\/api\/suppliers\/(\d+)\/payments(?:\/(\d+))?$/);
+  if (supplierPaymentsMatch) {
+    if (!requireAdmin(user, res)) return;
+    const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(+supplierPaymentsMatch[1]);
+    if (!supplier) return sendJson(res, 404, { error: 'Supplier not found', messageAr: 'المورد غير موجود' });
+    const paymentId = supplierPaymentsMatch[2] ? +supplierPaymentsMatch[2] : null;
+    const METHODS = new Set(['cash', 'bank', 'cheque', 'wallet', 'other']);
+
+    if (method === 'GET' && !paymentId) {
+      const days = Math.min(3650, Math.max(1, int(url.searchParams.get('days'), 365)));
+      const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      return sendJson(res, 200, db.prepare(`
+        SELECT sp.*, p.invoice_no, u.name AS created_by_name
+        FROM supplier_payments sp
+        LEFT JOIN purchases p ON p.id = sp.purchase_id
+        LEFT JOIN users u ON u.id = sp.created_by
+        WHERE sp.supplier_id = ? AND date(sp.date) >= date(?)
+        ORDER BY sp.date DESC, sp.id DESC`).all(supplier.id, from));
+    }
+
+    if (method === 'POST' && !paymentId) {
+      const b = await readBody(req);
+      const amount = round2(num(b.amount, -1));
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 100_000_000) {
+        return sendJson(res, 400, { error: 'Payment amount must be greater than zero', messageAr: 'مبلغ الدفعة يجب أن يكون أكبر من صفر' });
+      }
+      const methodName = METHODS.has(String(b.method)) ? String(b.method) : 'cash';
+      let purchase = null;
+      if (b.purchaseId) {
+        purchase = db.prepare('SELECT * FROM purchases WHERE id = ? AND supplier_id = ?').get(int(b.purchaseId), supplier.id);
+        if (!purchase) return sendJson(res, 400, { error: 'Invoice not found for this supplier', messageAr: 'الفاتورة غير موجودة لهذا المورد' });
+        if (purchase.status !== 'posted') return sendJson(res, 409, { error: 'This invoice is reversed', messageAr: 'هذه الفاتورة مُلغاة' });
+        const remaining = round2(purchase.total - purchase.paid);
+        if (amount > remaining + 0.009) {
+          return sendJson(res, 400, {
+            error: 'Payment is larger than what is still due on this invoice',
+            messageAr: 'الدفعة أكبر من المتبقي على هذه الفاتورة',
+            code: 'PAYMENT_EXCEEDS_INVOICE',
+            remaining,
+          });
+        }
+      }
+      let paymentIdNew;
+      db.exec('BEGIN');
+      try {
+        const info = db.prepare(`INSERT INTO supplier_payments(supplier_id, purchase_id, date, amount, method, reference, note, created_by)
+          VALUES(?, ?, COALESCE(?, datetime('now')), ?, ?, ?, ?, ?)`)
+          .run(supplier.id, purchase ? purchase.id : null, str(b.date, 40) || null, amount, methodName, str(b.reference, 80), str(b.note, 300), user.id);
+        paymentIdNew = Number(info.lastInsertRowid);
+        if (purchase) {
+          db.prepare('UPDATE purchases SET paid = ? WHERE id = ?').run(round2(purchase.paid + amount), purchase.id);
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+      const balance = round2(db.prepare(`
+        SELECT (SELECT COALESCE(SUM(total),0) FROM purchases WHERE supplier_id = ? AND status = 'posted')
+             - (SELECT COALESCE(SUM(amount),0) FROM supplier_payments WHERE supplier_id = ?) AS b`).get(supplier.id, supplier.id).b);
+      audit(req, user, 'supplier_payment_recorded', 'supplier', supplier.id, { paymentId: paymentIdNew, amount, method: methodName, purchaseId: purchase?.id ?? null });
+      return sendJson(res, 201, {
+        ...db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(paymentIdNew),
+        supplier_id: supplier.id,
+        purchase_paid: purchase ? round2(purchase.paid + amount) : null,
+        supplier_balance: balance,
+      });
+    }
+
+    if (method === 'DELETE' && paymentId) {
+      const payment = db.prepare('SELECT * FROM supplier_payments WHERE id = ? AND supplier_id = ?').get(paymentId, supplier.id);
+      if (!payment) return sendJson(res, 404, { error: 'Payment not found', messageAr: 'الدفعة غير موجودة' });
+      db.exec('BEGIN');
+      try {
+        db.prepare('DELETE FROM supplier_payments WHERE id = ?').run(payment.id);
+        if (payment.purchase_id) {
+          const paid = db.prepare('SELECT COALESCE(SUM(amount),0) AS s FROM supplier_payments WHERE purchase_id = ?').get(payment.purchase_id).s;
+          db.prepare('UPDATE purchases SET paid = ? WHERE id = ?').run(round2(paid), payment.purchase_id);
+        }
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+      audit(req, user, 'supplier_payment_deleted', 'supplier', supplier.id, { paymentId: payment.id, amount: payment.amount, purchaseId: payment.purchase_id });
+      return sendJson(res, 200, { ok: true });
+    }
+    return sendJson(res, 405, { error: 'Method not allowed', messageAr: 'الطريقة غير مسموحة' });
+  }
+
   const supplierStatementMatch = p.match(/^\/api\/suppliers\/(\d+)\/statement$/);
   if (supplierStatementMatch && method === 'GET') {
     if (!requireAdmin(user, res)) return;
@@ -922,26 +1100,36 @@ async function handleApi(req, res, url) {
       SELECT id, date, invoice_no, subtotal, tax, total, paid, status
       FROM purchases WHERE supplier_id = ? AND date(date) >= date(?)
       ORDER BY date DESC, id DESC`).all(supplier.id, from);
+    const payments = db.prepare(`
+      SELECT sp.*, p.invoice_no, u.name AS created_by_name
+      FROM supplier_payments sp
+      LEFT JOIN purchases p ON p.id = sp.purchase_id
+      LEFT JOIN users u ON u.id = sp.created_by
+      WHERE sp.supplier_id = ? AND date(sp.date) >= date(?)
+      ORDER BY sp.date DESC, sp.id DESC`).all(supplier.id, from);
     const posted = purchases.filter(row => row.status === 'posted');
     const sum = (rows, key) => round2(rows.reduce((total, row) => total + Number(row[key] || 0), 0));
+    const paidInWindow = sum(payments, 'amount');
     const lifetime = db.prepare(`
-      SELECT COUNT(*) AS invoices, COALESCE(SUM(total),0) AS total, COALESCE(SUM(paid),0) AS paid
+      SELECT COUNT(*) AS invoices, COALESCE(SUM(total),0) AS total
       FROM purchases WHERE supplier_id = ? AND status = 'posted'`).get(supplier.id);
+    const lifetimePaid = round2(db.prepare('SELECT COALESCE(SUM(amount),0) AS s FROM supplier_payments WHERE supplier_id = ?').get(supplier.id).s);
     return sendJson(res, 200, {
       supplier: { id: supplier.id, name: supplier.name, phone: supplier.phone, email: supplier.email, note: supplier.note, active: supplier.active },
       window: { days, from, to: new Date().toISOString().slice(0, 10) },
       purchases,
+      payments,
       totals: {
         invoices: posted.length,
         total: sum(posted, 'total'),
-        paid: sum(posted, 'paid'),
-        outstanding: round2(sum(posted, 'total') - sum(posted, 'paid')),
+        paid: paidInWindow,
+        outstanding: round2(sum(posted, 'total') - paidInWindow),
       },
       lifetime: {
         invoices: lifetime.invoices,
         total: round2(lifetime.total),
-        paid: round2(lifetime.paid),
-        outstanding: round2(lifetime.total - lifetime.paid),
+        paid: lifetimePaid,
+        outstanding: round2(lifetime.total - lifetimePaid),
       },
     });
   }
@@ -1030,6 +1218,11 @@ async function handleApi(req, res, url) {
         db.prepare('UPDATE products SET stock = stock + ?, cost_price = ? WHERE id = ?')
           .run(item.qty, Math.round(nextCost * 10000) / 10000, item.product.id);
       }
+      // Keep every payment in one ledger so the supplier balance has a single source.
+      if (paid > 0 && supplier) {
+        db.prepare(`INSERT INTO supplier_payments(supplier_id, purchase_id, amount, method, note, created_by)
+          VALUES(?, ?, ?, 'cash', 'دفعة مسجّلة مع الفاتورة', ?)`).run(supplier.id, purchaseId, paid, user.id);
+      }
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -1070,7 +1263,8 @@ async function handleApi(req, res, url) {
       for (const item of purchase.items) {
         if (item.product_id) db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?').run(item.qty, item.product_id);
       }
-      db.prepare("UPDATE purchases SET status = 'reversed' WHERE id = ?").run(purchase.id);
+      db.prepare('DELETE FROM supplier_payments WHERE purchase_id = ?').run(purchase.id);
+      db.prepare("UPDATE purchases SET status = 'reversed', paid = 0 WHERE id = ?").run(purchase.id);
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');

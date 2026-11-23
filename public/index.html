@@ -279,6 +279,31 @@
       </div>
     </div>
   </section>
+  <section class="card admin-only" id="vat-card">
+    <div class="page-head" style="margin:0 0 12px">
+      <h3 data-i18n="vat.title">🧾 ضريبة القيمة المضافة</h3>
+      <div class="head-actions">
+        <select id="vat-days">
+          <option value="30" selected data-i18n="vat.d30">آخر ٣٠ يومًا</option>
+          <option value="90" data-i18n="vat.d90">آخر ٩٠ يومًا</option>
+          <option value="365" data-i18n="vat.d365">آخر سنة</option>
+        </select>
+        <button class="btn ghost" id="vat-export" data-i18n="vat.export">⬇ تصدير CSV</button>
+      </div>
+    </div>
+    <div class="stat-row" id="vat-stats"></div>
+    <p class="muted small" id="vat-note"></p>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th data-i18n="profit.day">اليوم</th>
+        <th data-i18n="vat.output">ضريبة المبيعات</th>
+        <th data-i18n="vat.input">ضريبة المشتريات</th>
+        <th data-i18n="vat.net">الصافي المستحق</th>
+        <th data-i18n="vat.taxableSales">مبيعات خاضعة</th>
+      </tr></thead>
+      <tbody id="vat-body"></tbody>
+    </table></div>
+  </section>
   <div class="stats" id="stats"></div>
   <div class="two-col">
     <section class="card"><h3 data-i18n="sales.topProducts">🏆 الأكثر مبيعًا</h3><div id="top-products"></div></section>
@@ -639,6 +664,34 @@
           <th data-i18n="pur.colStatus">الحالة</th>
         </tr></thead>
         <tbody id="stm-body"></tbody>
+      </table>
+    </div>
+
+    <h4 class="sub-head" data-i18n="pay.title">💸 الدفعات</h4>
+    <div class="import-controls">
+      <input id="stm-pay-amount" type="number" min="0.01" step="0.01" data-i18n-placeholder="pay.amount" placeholder="المبلغ" />
+      <select id="stm-pay-invoice"><option value="" data-i18n="pay.onAccount">على الحساب</option></select>
+      <select id="stm-pay-method">
+        <option value="cash" data-i18n="pay.cash">نقدي</option>
+        <option value="bank" data-i18n="pay.bank">تحويل بنكي</option>
+        <option value="cheque" data-i18n="pay.cheque">شيك</option>
+        <option value="wallet" data-i18n="pay.wallet">محفظة إلكترونية</option>
+        <option value="other" data-i18n="pay.other">أخرى</option>
+      </select>
+      <input id="stm-pay-ref" data-i18n-placeholder="pay.reference" placeholder="مرجع/رقم إيصال" />
+      <button type="button" class="btn primary small" id="stm-pay-add" data-i18n="pay.add">＋ تسجيل دفعة</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th data-i18n="pur.colDate">التاريخ</th>
+          <th data-i18n="pay.invoice">الفاتورة</th>
+          <th data-i18n="pay.method">الطريقة</th>
+          <th data-i18n="pay.amount">المبلغ</th>
+          <th data-i18n="pay.reference">المرجع</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="stm-payments-body"></tbody>
       </table>
     </div>
     <div class="modal-actions">

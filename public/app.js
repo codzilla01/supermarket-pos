@@ -80,6 +80,8 @@ function reportApiProblem(err) {
   return false;
 }
 
+const round2 = value => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
 function toast(msg) {
   const el = $('#toast');
   el.textContent = msg;
@@ -236,7 +238,7 @@ function relocalize() {
   if ($('#view-settings').classList.contains('active')) safeRender(renderSettings);
   if ($('#view-audit').classList.contains('active')) safeRender(renderAudit);
   if ($('#view-purchases').classList.contains('active')) safeRender(renderPurchases);
-  if ($('#view-sales').classList.contains('active')) safeRender(renderProfit);
+  if ($('#view-sales').classList.contains('active')) { safeRender(renderProfit); safeRender(renderVat); }
   if ($('#view-stocktake').classList.contains('active')) safeRender(renderStocktake);
   if (importPlan) renderImportPreview(importPlan);
   if ($('#view-subscription').classList.contains('active')) renderSubscriptionStatus();
@@ -909,6 +911,7 @@ let purchaseRows = [];
 
 const purchasePaymentLabel = status => t(`pur.pay.${status}`);
 const paymentBadgeClass = status => ({ paid: '', partial: 'low', unpaid: 'out' })[status] || '';
+const paymentMethodLabel = method => t(`pay.method.${['cash', 'bank', 'cheque', 'wallet', 'other'].includes(method) ? method : 'other'}`);
 const paymentStatusFor = (total, paid) => (total === 0 || paid >= total - 0.009 ? 'paid' : paid > 0 ? 'partial' : 'unpaid');
 
 async function renderPurchases() {
@@ -1010,6 +1013,27 @@ async function loadSupplierStatement() {
     t('stm.lifetime', { total: money(data.lifetime.total), due: money(data.lifetime.outstanding) }),
     t('stm.reversedNote'),
   ].filter(Boolean).join(' — ');
+  const openInvoices = data.purchases.filter(row => row.status === 'posted' && row.total - row.paid > 0.009);
+  $('#stm-pay-invoice').innerHTML = `<option value="">${esc(t('pay.onAccount'))}</option>` +
+    openInvoices.map(row => `<option value="${row.id}">${esc(row.invoice_no || `#${row.id}`)} · ${esc(t('stm.due'))} ${money(round2(row.total - row.paid))}</option>`).join('');
+  $('#stm-payments-body').innerHTML = data.payments.length ? data.payments.map(row => `<tr>
+    <td class="nowrap"><bdi>${esc(fmtDateTime(row.date))}</bdi></td>
+    <td dir="auto">${esc(row.purchase_id ? (row.invoice_no || `#${row.purchase_id}`) : t('pay.onAccount'))}</td>
+    <td>${esc(paymentMethodLabel(row.method))}</td>
+    <td><strong>${money(row.amount)}</strong></td>
+    <td dir="auto">${esc(row.reference || '—')}</td>
+    <td><button class="icon-btn" data-pay-del="${row.id}" data-pay-amount="${row.amount}" title="${esc(t('pay.delete'))}">🗑</button></td>
+  </tr>`).join('') : `<tr><td colspan="6" class="muted">${esc(t('pay.none'))}</td></tr>`;
+  $$('#stm-payments-body [data-pay-del]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm(t('pay.deleteConfirm', { amount: money(Number(b.dataset.payAmount) || 0) }))) return;
+    try {
+      await api(`/api/suppliers/${statementSupplierId}/payments/${b.dataset.payDel}`, { method: 'DELETE' });
+      toast(t('pay.deleted'));
+      await loadSupplierStatement();
+      await renderPurchases();
+    } catch (err) { toast(t('err.prefix', { message: err.message })); }
+  }));
+
   $('#stm-body').innerHTML = data.purchases.length ? data.purchases.map(row => {
     const due = Math.max(0, row.total - row.paid);
     return `<tr class="${row.status === 'reversed' ? 'row-muted' : ''}">
@@ -1024,6 +1048,30 @@ async function loadSupplierStatement() {
 }
 
 $('#stm-days').addEventListener('change', () => safeRender(loadSupplierStatement));
+
+$('#stm-pay-add').addEventListener('click', async () => {
+  if (!statementSupplierId) return;
+  const amount = parseFloat($('#stm-pay-amount').value);
+  if (!Number.isFinite(amount) || amount <= 0) { toast(t('pay.amountRequired')); return; }
+  const button = $('#stm-pay-add');
+  button.disabled = true;
+  try {
+    const body = {
+      amount,
+      purchaseId: $('#stm-pay-invoice').value || null,
+      method: $('#stm-pay-method').value,
+      reference: $('#stm-pay-ref').value.trim(),
+    };
+    const created = await api(`/api/suppliers/${statementSupplierId}/payments`, { method: 'POST', body: JSON.stringify(body) });
+    toast(t('pay.recorded', { amount: money(created.amount), balance: money(created.supplier_balance) }));
+    $('#stm-pay-amount').value = '';
+    $('#stm-pay-ref').value = '';
+    await loadSupplierStatement();
+    await renderPurchases();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); } finally {
+    button.disabled = false;
+  }
+});
 
 $('#stm-export').addEventListener('click', () => {
   const data = statementData;
@@ -1044,6 +1092,14 @@ $('#stm-export').addEventListener('click', () => {
     [t('stm.total'), data.totals.total],
     [t('stm.paid'), data.totals.paid],
     [t('stm.outstanding'), data.totals.outstanding],
+    [],
+    [t('pay.title')],
+    [t('pur.colDate'), t('pay.invoice'), t('pay.method'), t('pay.amount'), t('pay.reference')],
+    ...data.payments.map(row => [
+      row.date,
+      row.purchase_id ? (row.invoice_no || `#${row.purchase_id}`) : t('pay.onAccount'),
+      paymentMethodLabel(row.method), row.amount, row.reference || '',
+    ]),
   ];
   const csv = '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
   const a = document.createElement('a');
@@ -1570,6 +1626,7 @@ $('#customer-form').addEventListener('submit', async e => {
 async function renderSales() {
   const [stats, sales, shifts] = await Promise.all([api('/api/stats'), api('/api/sales'), api('/api/shifts')]);
   await renderProfit();
+  await renderVat();
   const today = stats.today;
   $('#stats').innerHTML = `
     <div class="stat"><div class="label">${esc(t('sales.revenueToday'))}</div><div class="value"><bdi>${money(today.revenue)}</bdi></div></div>
@@ -1665,6 +1722,59 @@ async function renderProfit() {
     <td>${marginLabel(row.margin)}</td>
   </tr>`).join('') : `<tr><td colspan="4" class="muted">${esc(t('profit.noSales'))}</td></tr>`;
 }
+
+// ---------- VAT report (admin) ----------
+let vatReport = null;
+
+async function renderVat() {
+  const card = $('#vat-card');
+  if (!card) return;
+  if (me?.role !== 'admin') { card.hidden = true; return; }
+  card.hidden = false;
+  const days = Number($('#vat-days').value) || 30;
+  const data = await api(`/api/reports/vat?days=${days}`);
+  vatReport = data;
+  const totals = data.totals;
+  $('#vat-stats').innerHTML = `
+    <div class="stat"><span class="muted small">${esc(t('vat.output'))}</span><strong>${money(totals.output_tax)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('vat.input'))}</span><strong>${money(totals.input_tax)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('vat.net'))}</span><strong class="${totals.net_payable < 0 ? 'negative' : ''}">${money(totals.net_payable)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('vat.taxableSales'))}</span><strong>${money(totals.sales_taxable)}</strong></div>
+    <div class="stat"><span class="muted small">${esc(t('vat.taxablePurchases'))}</span><strong>${money(totals.purchases_taxable)}</strong></div>`;
+  $('#vat-note').textContent = [
+    t('vat.note'),
+    t('vat.counts', { sales: totals.sales_invoices, purchases: totals.purchase_invoices }),
+  ].join(' ');
+  $('#vat-body').innerHTML = data.days.length ? data.days.map(row => `<tr>
+    <td class="nowrap"><bdi>${esc(row.day)}</bdi></td>
+    <td>${money(row.output_tax)}</td>
+    <td>${money(row.input_tax)}</td>
+    <td class="${row.net < 0 ? 'negative' : ''}"><strong>${money(row.net)}</strong></td>
+    <td>${money(row.sales_taxable)}</td>
+  </tr>`).join('') : `<tr><td colspan="5" class="muted">${esc(t('vat.empty'))}</td></tr>`;
+}
+
+$('#vat-days').addEventListener('change', () => safeRender(renderVat));
+
+$('#vat-export').addEventListener('click', () => {
+  const report = vatReport;
+  if (!report) return;
+  const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const rows = [
+    [t('vat.title')],
+    [t('stm.period'), `${report.window.from} → ${report.window.to}`],
+    [],
+    [t('profit.day'), t('vat.output'), t('vat.input'), t('vat.net'), t('vat.taxableSales'), t('vat.taxablePurchases')],
+    ...report.days.map(row => [row.day, row.output_tax, row.input_tax, row.net, row.sales_taxable, row.purchases_taxable]),
+    [],
+    [t('cart.total'), report.totals.output_tax, report.totals.input_tax, report.totals.net_payable, report.totals.sales_taxable, report.totals.purchases_taxable],
+  ];
+  const csv = '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `freshmart-vat-${report.window.days}-days.csv`;
+  a.click();
+});
 
 $('#profit-days').addEventListener('change', () => safeRender(renderProfit));
 
