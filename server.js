@@ -902,6 +902,40 @@ async function handleApi(req, res, url) {
       throw e;
     }
   }
+  const supplierStatementMatch = p.match(/^\/api\/suppliers\/(\d+)\/statement$/);
+  if (supplierStatementMatch && method === 'GET') {
+    if (!requireAdmin(user, res)) return;
+    const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(+supplierStatementMatch[1]);
+    if (!supplier) return sendJson(res, 404, { error: 'Supplier not found', messageAr: 'المورد غير موجود' });
+    const days = Math.min(365, Math.max(1, int(url.searchParams.get('days'), 90)));
+    const from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    const purchases = db.prepare(`
+      SELECT id, date, invoice_no, subtotal, tax, total, paid, status
+      FROM purchases WHERE supplier_id = ? AND date(date) >= date(?)
+      ORDER BY date DESC, id DESC`).all(supplier.id, from);
+    const posted = purchases.filter(row => row.status === 'posted');
+    const sum = (rows, key) => round2(rows.reduce((total, row) => total + Number(row[key] || 0), 0));
+    const lifetime = db.prepare(`
+      SELECT COUNT(*) AS invoices, COALESCE(SUM(total),0) AS total, COALESCE(SUM(paid),0) AS paid
+      FROM purchases WHERE supplier_id = ? AND status = 'posted'`).get(supplier.id);
+    return sendJson(res, 200, {
+      supplier: { id: supplier.id, name: supplier.name, phone: supplier.phone, email: supplier.email, note: supplier.note, active: supplier.active },
+      window: { days, from, to: new Date().toISOString().slice(0, 10) },
+      purchases,
+      totals: {
+        invoices: posted.length,
+        total: sum(posted, 'total'),
+        paid: sum(posted, 'paid'),
+        outstanding: round2(sum(posted, 'total') - sum(posted, 'paid')),
+      },
+      lifetime: {
+        invoices: lifetime.invoices,
+        total: round2(lifetime.total),
+        paid: round2(lifetime.paid),
+        outstanding: round2(lifetime.total - lifetime.paid),
+      },
+    });
+  }
   const supplierMatch = p.match(/^\/api\/suppliers\/(\d+)$/);
   if (supplierMatch) {
     if (!requireAdmin(user, res)) return;

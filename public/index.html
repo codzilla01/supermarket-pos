@@ -614,6 +614,39 @@
   </form>
 </div>
 
+<!-- ============ SUPPLIER STATEMENT MODAL ============ -->
+<div class="modal-backdrop" id="statement-modal" hidden>
+  <div class="modal modal-wide">
+    <h2 id="stm-title" data-i18n="stm.title">كشف حساب مورد</h2>
+    <div class="import-controls">
+      <select id="stm-days">
+        <option value="30" data-i18n="stm.d30">آخر ٣٠ يومًا</option>
+        <option value="90" selected data-i18n="stm.d90">آخر ٩٠ يومًا</option>
+        <option value="365" data-i18n="stm.d365">آخر سنة</option>
+      </select>
+      <button type="button" class="btn ghost small" id="stm-export" data-i18n="stm.export">⬇ تصدير CSV</button>
+    </div>
+    <div class="stat-row" id="stm-stats"></div>
+    <p class="muted small" id="stm-note"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th data-i18n="pur.colDate">التاريخ</th>
+          <th data-i18n="pur.colInvoice">رقم الفاتورة</th>
+          <th data-i18n="pur.colTotal">الإجمالي</th>
+          <th data-i18n="pur.colPaid">المدفوع</th>
+          <th data-i18n="stm.due">المتبقي</th>
+          <th data-i18n="pur.colStatus">الحالة</th>
+        </tr></thead>
+        <tbody id="stm-body"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إغلاق</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ PURCHASE MODAL ============ -->
 <div class="modal-backdrop" id="purchase-modal" hidden>
   <form class="modal modal-wide" id="purchase-form">

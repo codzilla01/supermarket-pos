@@ -43,6 +43,7 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 - **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
 - **Excel/CSV stock import** — admins upload an `.xlsx`/`.xlsm`/`.csv` of products (Arabic or English headers), get a full preview (new / update / skipped / error per line) and confirm before anything is written; Arabic-Indic digits, `14%`/`0.14` tax formats, Arabic categories and units are normalized, existing rows are matched by barcode then name, and a downloadable CSV template is included
 - **Purchases & suppliers** — supplier records (name, phone, email, note, soft-deleted instead of erased) and purchase invoices with multiple lines; receiving an invoice increases stock, recomputes a moving-average unit cost, applies the store tax rate, records what was paid (`paid` / `partial` / `unpaid`) and can be reversed in one click (single-shot, refused if stock is insufficient). Every invoice keeps its number, note and author for auditing
+- **Supplier statement** — a per-supplier statement (30 days / 90 days / a year) with invoices, what was paid on each, what is still due, period and all-time totals, reversed invoices shown but excluded from the totals, and CSV export
 - **Stocktake** — start a count that snapshots every active product with its expected quantity, enter counted values (with live differences, search and a differences-only filter), save drafts as you go and apply once; applying writes the counted quantities and returns gains/losses, and only one count can be open at a time
 - **Audit trail** — every sensitive action (sign-in and failed sign-ins, password changes, shifts, voids/refunds, product create/update/delete/import, settings, users, backups) is recorded with actor, role, IP, request id and details, and is searchable from the admin-only **Audit log** tab
 - **Automatic backups** — a gzipped JSON snapshot is written every 24 h to `backups/` (7 kept by default, configurable), plus manual "create now" from Settings; each snapshot includes products, sales, shifts, customers, suppliers, purchases, stocktakes, settings, subscription history and the audit log
@@ -90,7 +91,7 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Tests and health check
 
 ```bash
-npm test        # 45 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
+npm test        # 46 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
 npm run icons   # regenerate public/icons/*.png
 npm run test:ui # optional headless-browser smoke test (needs: npm i --no-save jsdom)
 ```
@@ -147,6 +148,15 @@ The developer console and its license/audit data live in the same SQLite databas
 - **فاتورة مشتريات**: بنود متعددة (صنف، كمية، تكلفة الوحدة)؛ عند الحفظ تدخل الكميات إلى المخزون ويُحدَّث متوسط تكلفة الوحدة، وتُطبَّق نسبة الضريبة الافتراضية أو نسبة مخصّصة، ويُسجَّل المدفوع للمورد. عكس الفاتورة يخصم الكميات فورًا، مرة واحدة فقط، ويُرفض إن كان المخزون لا يكفي (409).
 - **الجرد**: «بدء جرد جديد» يأخذ لقطة لكل صنف نشط مع الكمية المتوقعة. أدخل الكميات الفعلية (يظهر الفرق مباشرة، مع بحث ومرشّح «الفروق فقط»)، احفظ مسوّدة، ثم «تطبيق الجرد» لكتابة الكميات الفعلية. جرد واحد مفتوح في كل مرة، وكل ذلك مسجّل في سجل التدقيق.
 - **النسخ المشفّر خارج الخادم**: اضبط `POS_BACKUP_ENCRYPTION_KEY` (16 حرفًا أو أكثر) و`POS_BACKUP_UPLOAD_URL` (واختياريًا `POS_BACKUP_UPLOAD_TOKEN` و`POS_BACKUP_UPLOAD_METHOD`)، ثم استخدم زر «رفع نسخة مشفّرة الآن» في الإعدادات. الملف الناتج `.posbak` مشفّر بـ AES-256-GCM، ولا يمكن فتحه بدون المفتاح: `node scripts/restore-backup.js --file x.posbak --key "…" --check`. المفاتيح لا تُكتب في الكود ولا تُرفع إلى Git.
+
+## كشف حساب المورد
+
+من تبويب «المشتريات» اضغط 📄 بجانب أي مورد لعرض:
+
+- إجمالي الفواتير، المسدَّد، والمستحق **داخل الفترة** (٣٠ يومًا / ٩٠ يومًا / سنة) بالإضافة إلى الإجمالي الكلي للمورد.
+- كل فاتورة بتاريخها ورقمها وإجماليها والمدفوع منها والمتبقي وحالتها (مسددة/جزئية/غير مسددة/مُلغاة).
+- الفواتير **المُلغاة تظهر** للمراجعة لكنها **لا تُحتسب** في الإجماليات، ولا يوجد أي تعديل على البيانات من هذه الشاشة.
+- زر **تصدير CSV** يحتوي بيانات المورد والفترة والفواتير والإجماليات.
 
 ## تقرير الأرباح والهامش
 

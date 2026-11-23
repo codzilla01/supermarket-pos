@@ -19,6 +19,8 @@ const BASE = `http://localhost:${PORT}`;
 const tmpDb = path.join(os.tmpdir(), `pos-features-${Date.now()}.db`);
 const backupDir = path.join(os.tmpdir(), `pos-features-backups-${Date.now()}`);
 
+const round2 = value => Math.round(value * 100) / 100;
+
 let server;
 let cookie = '';
 let stdout = '';
@@ -493,6 +495,48 @@ test('end to end: shift, sale, void and audit trail', async () => {
   for (const expected of ['shift_opened', 'sale_voided', 'shift_closed']) {
     assert.ok(actions.includes(expected), `audit should contain ${expected}`);
   }
+});
+
+// ---------- supplier statement ----------
+test('the supplier statement sums invoices, payments and what is still due', async () => {
+  const supplier = await req('POST', '/api/suppliers', { name: 'مورد كشف الحساب', phone: '01001112223' });
+  assert.equal(supplier.status, 201);
+  const products = (await req('GET', '/api/products')).data;
+  const item = products[0];
+
+  const first = await req('POST', '/api/purchases', {
+    supplierId: supplier.data.id, invoiceNo: 'STM-1', items: [{ productId: item.id, qty: 2, unitCost: 10 }], paid: 5,
+  });
+  const second = await req('POST', '/api/purchases', {
+    supplierId: supplier.data.id, invoiceNo: 'STM-2', items: [{ productId: item.id, qty: 1, unitCost: 20 }], paid: 0,
+  });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  const partlyPaid = first.data; // paid 5 of its total
+  const unpaid = second.data;
+
+  const statement = await req('GET', `/api/suppliers/${supplier.data.id}/statement?days=30`);
+  assert.equal(statement.status, 200);
+  assert.equal(statement.data.supplier.name, 'مورد كشف الحساب');
+  assert.equal(statement.data.window.days, 30);
+  assert.equal(statement.data.purchases.length, 2);
+  assert.equal(statement.data.totals.invoices, 2);
+  assert.equal(statement.data.totals.total, round2(partlyPaid.total + unpaid.total));
+  assert.equal(statement.data.totals.paid, 5);
+  assert.equal(statement.data.totals.outstanding, round2(partlyPaid.total + unpaid.total - 5));
+  assert.equal(statement.data.lifetime.invoices, 2);
+
+  // A reversed invoice is listed but does not count towards what is owed.
+  await req('POST', `/api/purchases/${unpaid.id}/reverse`, {});
+  const afterReverse = await req('GET', `/api/suppliers/${supplier.data.id}/statement?days=30`);
+  assert.equal(afterReverse.data.purchases.length, 2);
+  assert.ok(afterReverse.data.purchases.some(row => row.status === 'reversed'));
+  assert.equal(afterReverse.data.totals.invoices, 1);
+  assert.equal(afterReverse.data.totals.total, partlyPaid.total);
+  assert.equal(afterReverse.data.totals.outstanding, round2(partlyPaid.total - 5));
+
+  assert.equal((await req('GET', '/api/suppliers/999999/statement')).status, 404);
+  assert.equal((await req('GET', `/api/suppliers/${supplier.data.id}/statement`, null, false)).status, 401);
 });
 
 // ---------- profit report ----------
