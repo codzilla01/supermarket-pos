@@ -1,0 +1,39 @@
+# Systemd unit for a bare-metal install.
+#
+#   sudo cp deploy/freshmart-pos.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now freshmart-pos
+#
+# Put the secrets in /etc/freshmart-pos.env (chmod 600), for example:
+#   POS_INITIAL_ADMIN_PASSWORD=...
+#   POS_DEVELOPER_USERNAME=...
+#   POS_DEVELOPER_PASSWORD=...
+[Unit]
+Description=FreshMart POS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=freshmart
+Group=freshmart
+WorkingDirectory=/opt/freshmart-pos
+EnvironmentFile=/etc/freshmart-pos.env
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=3000
+Environment=POS_DB_PATH=/var/lib/freshmart-pos/pos.db
+Environment=POS_BACKUP_DIR=/var/lib/freshmart-pos/backups
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown closes the database and finishes in-flight requests.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/freshmart-pos
+StateDirectory=freshmart-pos
+
+[Install]
+WantedBy=multi-user.target

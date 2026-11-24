@@ -180,6 +180,49 @@ The developer console and its license/audit data live in the same SQLite databas
 
 ملاحظة: يُحسب الربح بتكلفة الوحدة **الحالية** من فواتير المشتريات (لا يوجد سجل تاريخي لتكلفة لحظة البيع)، فالبيانات القديمة قبل تسجيل التكلفة تظهر بهامش أعلى.
 
+## Deployment: Docker, systemd and HTTPS
+
+The POS has no runtime dependencies, so deployment is just Node 22 plus a writable directory for SQLite and backups.
+
+**Docker (recommended)**
+
+```bash
+cp .env.example .env          # set POS_INITIAL_ADMIN_PASSWORD, POS_DEVELOPER_*, backup keys
+docker compose up -d          # builds the image and starts on http://localhost:3000
+docker compose logs -f pos    # structured logs
+docker compose down           # stop; the pos-data volume keeps the database
+```
+
+- `Dockerfile` builds on `node:22-alpine`, runs as the unprivileged `node` user, and keeps the database and snapshots in `/app/data` (a named volume, `pos-data`), so `docker compose down && up` never loses data.
+- The image ships a `HEALTHCHECK` that polls `/healthz`; `docker ps` shows `healthy`/`unhealthy`.
+- Backups are written to `/app/data/backups`; with `POS_BACKUP_ENCRYPTION_KEY` + `POS_BACKUP_UPLOAD_URL` set they are also pushed off-site, encrypted.
+- SQLite allows a single writer: run **one** container per store, not several against the same volume.
+
+**Bare metal (systemd)**
+
+```bash
+sudo useradd --system --home /opt/freshmart-pos freshmart
+sudo rsync -a --exclude .git --exclude node_modules ./ /opt/freshmart-pos/
+sudo install -m 600 /dev/null /etc/freshmart-pos.env   # then fill in the secrets
+sudo cp deploy/freshmart-pos.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now freshmart-pos
+```
+
+The unit runs as `freshmart`, stores data in `/var/lib/freshmart-pos`, and stops with `SIGTERM` so the database and in-flight requests close cleanly.
+
+**HTTPS and TLS**
+
+Session cookies are `Secure` by default, so terminate TLS in front of the POS. `deploy/nginx-freshmart.conf` is a ready reverse-proxy block (HTTP→HTTPS redirect, `X-Forwarded-*` headers, 5 MB upload limit for stock imports); obtain the certificate with `certbot --nginx`. Set `POS_COOKIE_SECURE=false` only for plain-HTTP development, and `POS_COOKIE_SAMESITE=none` if the UI is embedded in a third-party iframe.
+
+**Continuous integration** — `.github/workflows/test.yml` runs `npm test`, the jsdom UI smoke test (`npm install --no-save jsdom && npm run test:ui`), and builds the Docker image, boots it, and waits for `/healthz`.
+
+## النشر: Docker وsystemd وHTTPS
+
+- **Docker**: `cp .env.example .env` ثم `docker compose up -d`؛ المنافذ من `POS_PORT` (افتراضيًا 3000)، وقاعدة البيانات والنسخ في حجم مُسمّى `pos-data` على `/app/data`، مع `HEALTHCHECK` يفحص `/healthz`. صورة واحدة لكل متجر لأن SQLite بكاتب واحد.
+- **بدون Docker**: `deploy/freshmart-pos.service` وحدة systemd تشغّل الخادم بمستخدم غير مميّز، مع `EnvironmentFile=/etc/freshmart-pos.env` (صلاحية 600) و`/var/lib/freshmart-pos` للبيانات، وإيقاف لطيف بـ `SIGTERM`.
+- **HTTPS**: الكوكي `Secure` افتراضيًا، لذا أنهِ TLS أمام النظام. `deploy/nginx-freshmart.conf` جاهز (تحويل HTTP→HTTPS، ترويسات `X-Forwarded-*`، حد رفع 5 ميجابايت)، والشهادة عبر `certbot --nginx`.
+- **CI**: `.github/workflows/test.yml` يشغّل `npm test` + اختبار الواجهة jsdom + بناء صورة Docker وتشغيلها والتحقق من `/healthz`.
+
 ## Deployment notes
 
 - Run behind a reverse proxy (nginx/Caddy) with **HTTPS** — session cookies are `HttpOnly; SameSite=Lax; Secure` by default. Set `POS_COOKIE_SECURE=false` only for local plain-HTTP development.

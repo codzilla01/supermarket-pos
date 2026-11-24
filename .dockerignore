@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+npm-debug.log*
+pos.db
+pos.db-shm
+pos.db-wal
+backups/
+data.json
+test/
+*.md
+.env
+.env.*
+!.env.example
