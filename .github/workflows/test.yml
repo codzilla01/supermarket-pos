@@ -13,3 +13,39 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+
+  ui-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # jsdom is a dev-only tool: it is never a runtime dependency of the POS.
+      - run: npm install --no-save jsdom@24
+      - run: npm run test:ui
+
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t freshmart-pos:ci .
+      - name: Boot it and wait for /healthz
+        run: |
+          docker run -d --name pos-ci -p 3000:3000 \
+            -e POS_INITIAL_ADMIN_PASSWORD=ci-admin-password-2026 \
+            -e POS_DEVELOPER_USERNAME=ci-dev \
+            -e POS_DEVELOPER_PASSWORD=ci-developer-password-2026 \
+            -e POS_COOKIE_SECURE=false \
+            freshmart-pos:ci
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/healthz; then echo "healthy"; exit 0; fi
+            sleep 2
+          done
+          echo "the container never became healthy"
+          docker logs pos-ci
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker rm -f pos-ci || true
