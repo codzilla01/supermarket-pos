@@ -34,15 +34,17 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 - **Point of Sale** — product grid, search, barcode entry (keyboard-wedge scanners work out of the box), discounts, store default plus per-product tax rates, configurable receipt address/phone/VAT number/footer, 80 mm thermal-print layout; sale retries use idempotency keys
 - **Starter catalog** — 33 default grocery items; admins can add missing starter products and edit names, prices, tax rates, and stock from Inventory without overwriting existing edits
 - **Notifications** — persistent visual alert center with optional tones, browser notifications, low/out-of-stock alerts, cash sale/shift events, and offline/sync warnings
-- **Users & roles** — Admin (inventory, settings, users, voids/refunds, backups) vs Cashier (selling only); scrypt password hashing, 12-hour sessions, login rate limiting
+- **Users & roles** — Admin (inventory, settings, users, voids/refunds, backups) vs Cashier (selling only); sessions use a 12-hour HttpOnly cookie and, with `POS_TOKEN_AUTH=true`, also a bearer token for environments where cookies are blocked; scrypt password hashing, 12-hour sessions, login rate limiting
 - **Shifts** — independent open/close sessions and cash reconciliation per named register; multiple browser terminals can connect to the same POS server
 - **Loyalty** — customers with phone numbers, earn points per store-currency unit spent, redeem points at checkout
 - **Returns** — cash-sale void/refund actions restore stock and loyalty points. Historical card refunds are blocked unless provider credentials and the original PaymentIntent reference are available; then full refunds use an idempotency key.
 - **Reports** — today's revenue/transactions, top products, sales by cashier, low-stock alerts, CSV export
-- **Profit & margin (admin)** — pick 7, 30 or 90 days and see tax-exclusive revenue, cost of goods (from each product's recorded unit cost), gross profit and margin, broken down per day and per product; the panel names how many sold units still lack a cost, and the whole report exports to CSV. Voided and refunded sales are excluded, and discounts/loyalty redemptions are shared across lines the same way the sale allocated them
+- **Profit & margin (admin)** — each sold line stores the unit cost at the moment of sale, so margins stay correct after costs change (older lines fall back to the product's current cost); pick 7, 30 or 90 days and see tax-exclusive revenue, cost of goods (from each product's recorded unit cost), gross profit and margin, broken down per day and per product; the panel names how many sold units still lack a cost, and the whole report exports to CSV. Voided and refunded sales are excluded, and discounts/loyalty redemptions are shared across lines the same way the sale allocated them
 - **Offline mode** — the app shell is cached (service worker); offline sales remain queued if sync is rejected, can be retried from the queue badge, and carry idempotency keys to prevent duplicate recording
 - **Excel/CSV stock import** — admins upload an `.xlsx`/`.xlsm`/`.csv` of products (Arabic or English headers), get a full preview (new / update / skipped / error per line) and confirm before anything is written; Arabic-Indic digits, `14%`/`0.14` tax formats, Arabic categories and units are normalized, existing rows are matched by barcode then name, and a downloadable CSV template is included
 - **Purchases & suppliers** — supplier records (name, phone, email, note, soft-deleted instead of erased) and purchase invoices with multiple lines; receiving an invoice increases stock, recomputes a moving-average unit cost, applies the store tax rate, records what was paid (`paid` / `partial` / `unpaid`) and can be reversed in one click (single-shot, refused if stock is insufficient). Every invoice keeps its number, note and author for auditing
+- **Supplier payments** — record a payment against a specific invoice or on account (cash / bank / cheque / wallet), with reference and note; the invoice's paid amount, the supplier balance and the statement update together, overpaying a single invoice is refused, payments can be deleted (audited) and reversing an invoice drops its payments
+- **VAT report (admin)** — output tax from completed sales against input tax from received purchase invoices for 30 days, 90 days or a year, net payable, taxable totals and a daily breakdown, with CSV export
 - **Supplier statement** — a per-supplier statement (30 days / 90 days / a year) with invoices, what was paid on each, what is still due, period and all-time totals, reversed invoices shown but excluded from the totals, and CSV export
 - **Stocktake** — start a count that snapshots every active product with its expected quantity, enter counted values (with live differences, search and a differences-only filter), save drafts as you go and apply once; applying writes the counted quantities and returns gains/losses, and only one count can be open at a time
 - **Audit trail** — every sensitive action (sign-in and failed sign-ins, password changes, shifts, voids/refunds, product create/update/delete/import, settings, users, backups) is recorded with actor, role, IP, request id and details, and is searchable from the admin-only **Audit log** tab
@@ -67,6 +69,7 @@ Open http://localhost:3000 and sign in as `admin` with the initial password you 
 | `POS_DEVELOPER_PASSWORD` | required | Developer-console secret (16+ characters) |
 | `POS_COOKIE_SECURE` | `true` | Secure session cookies; set false only for local plain HTTP |
 | `POS_COOKIE_SAMESITE` | `Lax` | `None` when the POS is embedded in a third-party iframe (e.g. a preview pane); browsers then require HTTPS |
+| `POS_TOKEN_AUTH` | `false` | `true` also returns the session token at sign-in; the UI then sends it as `Authorization: Bearer …`, so hosts that block cookies (embedded previews, strict privacy modes) still work |
 | `STRIPE_SECRET_KEY` | — | Optional; used only for refunds of historical Stripe card sales (new checkout is cash-only) |
 | `POS_BACKUP_ENABLED` | `true` | Set to `false` to disable the in-process backup timer |
 | `POS_BACKUP_DIR` | `./backups` next to the DB | Where gzipped snapshots are written |
@@ -84,6 +87,7 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Data & backups
 
 - All data lives in a single SQLite file (`pos.db`, WAL mode). Back it up by copying the file, use **Settings → Export backup** for a portable JSON snapshot, or rely on the automatic gzipped snapshots in `backups/` (listed under **Settings → Automatic backups**).
+- Supplier payments are included in the file snapshots, the manual export and the restore path, so a round-trip never loses what was paid.
 - **Encrypted off-site copy**: `POST /api/backups/upload` (or the button in Settings) writes `backup-YYYYMMDD-HHMMSS.posbak` and uploads it to `POS_BACKUP_UPLOAD_URL`. The container is `POSBAK01 | version | salt(16) | iv(12) | tag(16) | AES-256-GCM(gzip(json))` with a scrypt-derived key (N=16384), so a leaked bucket or a stolen file is useless without the passphrase. A failed upload is retried three times (4xx stops immediately) and the outcome is stored in settings and shown in the UI.
 - **Restoring an encrypted copy**: `node scripts/restore-backup.js --file backup-….posbak --key "$POS_BACKUP_ENCRYPTION_KEY" --out restore.json` (add `--check` to print only a summary). Then use **Settings → Import backup** with `restore.json`; suppliers, purchases, purchase items, stocktakes and stocktake items are restored alongside the rest of the data when present.
 - The old demo `data.json` format is no longer used.
@@ -92,7 +96,7 @@ Store settings (name, tax rate, currency, low-stock threshold, register name, lo
 ## Tests and health check
 
 ```bash
-npm test        # 47 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
+npm test        # 51 tests: API, localization, import/audit/backup/logging, purchasing, profit report, till flow
 npm run icons   # regenerate public/icons/*.png
 npm run test:ui # optional headless-browser smoke test (needs: npm i --no-save jsdom)
 ```
@@ -158,6 +162,12 @@ The developer console and its license/audit data live in the same SQLite databas
 - كل فاتورة بتاريخها ورقمها وإجماليها والمدفوع منها والمتبقي وحالتها (مسددة/جزئية/غير مسددة/مُلغاة).
 - الفواتير **المُلغاة تظهر** للمراجعة لكنها **لا تُحتسب** في الإجماليات، ولا يوجد أي تعديل على البيانات من هذه الشاشة.
 - زر **تصدير CSV** يحتوي بيانات المورد والفترة والفواتير والإجماليات.
+
+## الدفعات وضريبة القيمة المضافة
+
+- **دفعات الموردين**: من كشف حساب المورد سجّل دفعة مرتبطة بفاتورة معيّنة أو «على الحساب»، بالنقد أو التحويل البنكي أو الشيك أو المحفظة، مع مرجع وملاحظة. تتحدّث معًا: المدفوع على الفاتورة، رصيد المورد، وكشف الحساب. لا يمكن دفع أكثر من المتبقي على فاتورة واحدة، ويمكن حذف أي دفعة (تُسجَّل في سجل التدقيق)، وعكس الفاتورة يحذف دفعاتها.
+- **ضريبة القيمة المضافة**: كرت للمدير في تبويب «المبيعات والتقارير» يعرض ضريبة المخرجات من المبيعات المكتملة مقابل ضريبة المدخلات من فواتير المشتريات المستلمة (٣٠ يومًا / ٩٠ يومًا / سنة)، مع الصافي المستحق والوعاء الضريبي وتفصيل يومي وتصدير CSV. الفواتير الملغاة والمبيعات المسترجعة مستثناة، وراجع النسب مع قواعد الضريبة المحلية قبل التقديم.
+- **دقة التكلفة**: كل بند بيع يحتفظ بتكلفة الوحدة لحظة البيع، فتظل تقارير الأرباح صحيحة بعد تغيّر التكاليف (البنود القديمة ترجع للتكلفة الحالية).
 
 ## تقرير الأرباح والهامش
 

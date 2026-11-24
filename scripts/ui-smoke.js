@@ -222,6 +222,20 @@ async function main() {
   await wait(1500);
   check('statement lists the new invoice', /INV|#|ج\.م/.test($('#stm-body').textContent) && $$('#stm-body tr').length === 1, $('#stm-body').textContent.replace(/\s+/g, ' ').trim().slice(0, 60));
   check('statement totals the outstanding amount', $$('#stm-stats .stat').length === 4, $('#stm-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
+
+  $('#stm-pay-amount').value = '20';
+  $('#stm-pay-method').value = 'bank';
+  const invoiceOption = [...$('#stm-pay-invoice').options].find(o => o.value)?.value;
+  $('#stm-pay-invoice').value = invoiceOption || '';
+  $('#stm-pay-add').click();
+  await wait(1800);
+  check('payment is recorded from the statement', $$('#stm-payments-body tr').length === 1 && /تحويل بنكي/.test($('#stm-payments-body').textContent), $('#stm-payments-body').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
+  check('payment lowers the outstanding balance', /34\.00/.test($('#stm-stats').textContent), $('#stm-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 80));
+
+  window.confirm = () => true;
+  $('#stm-payments-body [data-pay-del]').click();
+  await wait(1600);
+  check('deleting a payment restores the balance', /لا توجد دفعات/.test($('#stm-payments-body').textContent) && /54\.00/.test($('#stm-stats').textContent), $('#stm-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 70));
   $('#statement-modal [data-close]').click();
   await wait(200);
   tab('inventory').click();
@@ -261,6 +275,9 @@ async function main() {
   check('profit card explains the cost source', /تكلفة الوحدة الحالية/.test($('#profit-note').textContent));
   check('empty profit period is explained', /لا توجد مبيعات مكتملة/.test($('#profit-days-body').textContent));
 
+  check('VAT card nets output against input tax', $$('#vat-stats .stat').length === 5, $('#vat-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 80));
+  check('VAT card explains the figures', /ضريبة المخرجات/.test($('#vat-note').textContent));
+
   const originalCreate = window.URL.createObjectURL;
   const originalClick = window.HTMLAnchorElement.prototype.click;
   let exportedBlob = null;
@@ -282,6 +299,7 @@ async function main() {
   check('English tab names are translated', /Purchases/.test(tab('purchases').textContent) && /Stocktake/.test(tab('stocktake').textContent));
   tab('sales').click();
   await wait(1200);
+  check('English VAT card is translated', /Receivables|Output tax/.test($('#vat-stats').textContent), $('#vat-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 60));
   check('English profit card is translated', /Profit & margin/.test($('#profit-card').textContent) && /Revenue \(ex-tax\)/.test($('#profit-stats').textContent), $('#profit-stats').textContent.replace(/\s+/g, ' ').trim().slice(0, 60));
 
   check('no uncaught page errors', errors.length === 0, errors.join(' | '));

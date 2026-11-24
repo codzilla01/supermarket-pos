@@ -295,6 +295,38 @@ function migrate(db) {
     `);
     db.prepare('PRAGMA user_version = 7').run();
   }
+  if (version < 8) {
+    db.exec(`
+      CREATE TABLE supplier_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+        purchase_id INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+        date TEXT NOT NULL DEFAULT (datetime('now')),
+        amount REAL NOT NULL,
+        method TEXT NOT NULL DEFAULT 'cash' CHECK(method IN ('cash', 'bank', 'cheque', 'wallet', 'other')),
+        reference TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_by INTEGER REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_supplier_payments_supplier ON supplier_payments(supplier_id, date);
+      CREATE INDEX idx_supplier_payments_purchase ON supplier_payments(purchase_id);
+    `);
+    // Invoices received before this version only stored a paid amount; turn each
+    // of those into a ledger row so balances have a single source of truth.
+    db.exec(`
+      INSERT INTO supplier_payments(supplier_id, purchase_id, date, amount, method, note, created_by)
+      SELECT supplier_id, id, date, paid, 'cash', 'دفعة مسجّلة مع الفاتورة', created_by
+      FROM purchases WHERE paid > 0 AND supplier_id IS NOT NULL AND status = 'posted'
+    `);
+    db.prepare('PRAGMA user_version = 8').run();
+  }
+  if (version < 9) {
+    // Snapshot the unit cost on every sold line so profit reports stay accurate
+    // after costs change.
+    db.exec('ALTER TABLE sale_items ADD COLUMN cost_price REAL');
+    db.prepare('PRAGMA user_version = 9').run();
+  }
 }
 
 function seed(db, hashPassword, initialAdminPassword) {

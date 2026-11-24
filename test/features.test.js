@@ -65,6 +65,7 @@ before(async () => {
       POS_BACKUP_KEEP: '2',
       POS_BACKUP_INTERVAL_HOURS: '24',
       POS_LOG_FORMAT: 'json',
+      POS_TOKEN_AUTH: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -497,6 +498,27 @@ test('end to end: shift, sale, void and audit trail', async () => {
   }
 });
 
+// ---------- bearer sessions ----------
+test('the session token works as a bearer header when token auth is on', async () => {
+  const login = await fetch(BASE + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'store-manager-password-2026!' }),
+  });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  assert.match(body.token, /^[a-f0-9]{64}$/, 'login returns the session token');
+
+  const viaHeader = await fetch(BASE + '/api/products', { headers: { Authorization: `Bearer ${body.token}` } });
+  assert.equal(viaHeader.status, 200);
+  assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: 'Bearer not-a-session' } })).status, 401);
+  assert.equal((await fetch(BASE + '/api/products')).status, 401);
+
+  const logout = await fetch(BASE + '/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${body.token}` } });
+  assert.equal(logout.status, 200);
+  assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: `Bearer ${body.token}` } })).status, 401);
+});
+
 // ---------- session cookies ----------
 test('session cookies are HttpOnly, Secure and SameSite=Lax by default', async () => {
   const login = await fetch(BASE + '/api/login', {
@@ -554,6 +576,137 @@ test('the supplier statement sums invoices, payments and what is still due', asy
   assert.equal((await req('GET', `/api/suppliers/${supplier.data.id}/statement`, null, false)).status, 401);
 });
 
+// ---------- supplier payments ----------
+test('supplier payments settle invoices, feed the balance and can be undone', async () => {
+  const supplier = await req('POST', '/api/suppliers', { name: 'مورد الدفعات' });
+  assert.equal(supplier.status, 201);
+  const product = (await req('GET', '/api/products')).data.find(p => p.barcode === '200001');
+
+  const invoice = await req('POST', '/api/purchases', {
+    supplierId: supplier.data.id,
+    invoiceNo: 'PAY-1',
+    items: [{ productId: product.id, qty: 5, unitCost: 8 }],
+    paid: 0,
+  });
+  assert.equal(invoice.status, 201);
+  assert.equal(invoice.data.paid, 0);
+  const total = invoice.data.total;
+
+  // The invoice arrives unpaid, so the whole total is outstanding.
+  let statement = await req('GET', `/api/suppliers/${supplier.data.id}/statement?days=30`);
+  assert.equal(statement.data.totals.outstanding, total);
+  assert.deepEqual(statement.data.payments, []);
+
+  const half = await req('POST', `/api/suppliers/${supplier.data.id}/payments`, {
+    amount: round2(total / 2), purchaseId: invoice.data.id, method: 'bank', reference: 'TRX-1',
+  });
+  assert.equal(half.status, 201);
+  assert.equal(half.data.method, 'bank');
+  assert.equal(half.data.purchase_paid, round2(total / 2));
+  assert.equal(half.data.supplier_balance, round2(total - total / 2));
+
+  const detail = await req('GET', `/api/purchases/${invoice.data.id}`);
+  assert.equal(detail.data.paid, round2(total / 2));
+  assert.equal(detail.data.payment_status, 'partial');
+
+  // Overpaying a single invoice is refused, the remainder is only due once.
+  const overshoot = await req('POST', `/api/suppliers/${supplier.data.id}/payments`, {
+    amount: round2(total), purchaseId: invoice.data.id,
+  });
+  assert.equal(overshoot.status, 400);
+  assert.equal(overshoot.data.code, 'PAYMENT_EXCEEDS_INVOICE');
+  assert.equal(overshoot.data.remaining, round2(total / 2));
+
+  // A payment on account still reduces what the supplier is owed.
+  const onAccount = await req('POST', `/api/suppliers/${supplier.data.id}/payments`, { amount: 1 });
+  assert.equal(onAccount.status, 201);
+  assert.equal(onAccount.data.purchase_id, null);
+
+  statement = await req('GET', `/api/suppliers/${supplier.data.id}/statement?days=30`);
+  assert.equal(statement.data.payments.length, 2);
+  assert.equal(statement.data.totals.paid, round2(total / 2 + 1));
+  assert.equal(statement.data.totals.outstanding, round2(total / 2 - 1));
+
+  const listed = await req('GET', `/api/suppliers/${supplier.data.id}/payments?days=30`);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.data.length, 2);
+  assert.ok(listed.data.some(row => row.invoice_no === 'PAY-1'));
+
+  // Deleting a payment puts the invoice back where it was.
+  const removed = await req('DELETE', `/api/suppliers/${supplier.data.id}/payments/${half.data.id}`);
+  assert.equal(removed.status, 200);
+  assert.equal((await req('GET', `/api/purchases/${invoice.data.id}`)).data.paid, 0);
+  const afterDelete = await req('GET', `/api/suppliers/${supplier.data.id}/statement?days=30`);
+  assert.equal(afterDelete.data.totals.paid, 1);
+  assert.equal(afterDelete.data.totals.outstanding, round2(total - 1));
+
+  // A reversed invoice drops its payments with it.
+  const second = await req('POST', '/api/purchases', {
+    supplierId: supplier.data.id, invoiceNo: 'PAY-2', items: [{ productId: product.id, qty: 1, unitCost: 5 }], paid: 2,
+  });
+  assert.ok((await req('GET', `/api/suppliers/${supplier.data.id}/payments?days=30`)).data.some(row => row.purchase_id === second.data.id));
+  assert.equal((await req('POST', `/api/purchases/${second.data.id}/reverse`, {})).status, 200);
+  const reversedDetail = await req('GET', `/api/purchases/${second.data.id}`);
+  assert.equal(reversedDetail.data.paid, 0);
+  assert.equal((await req('GET', `/api/suppliers/${supplier.data.id}/payments?days=30`)).data.some(row => row.purchase_id === second.data.id), false);
+
+  assert.equal((await req('POST', `/api/suppliers/${supplier.data.id}/payments`, { amount: 0 })).status, 400);
+  assert.equal((await req('POST', '/api/suppliers/999999/payments', { amount: 5 })).status, 404);
+  assert.equal((await req('GET', `/api/suppliers/${supplier.data.id}/payments`, null, false)).status, 401);
+
+  const suppliers = await req('GET', '/api/suppliers');
+  const row = suppliers.data.find(s => s.id === supplier.data.id);
+  assert.ok(row.payments_total >= 1);
+  assert.equal(row.balance, round2(row.purchase_total - row.payments_total));
+});
+
+test('the VAT report nets output tax against input tax', async () => {
+  const report = await req('GET', '/api/reports/vat?days=30');
+  assert.equal(report.status, 200);
+  assert.equal(report.data.window.days, 30);
+
+  const sales = (await req('GET', '/api/sales')).data.filter(s => s.status === 'completed');
+  const purchases = (await req('GET', '/api/purchases')).data.filter(p => p.status === 'posted');
+  assert.equal(report.data.totals.output_tax, round2(sales.reduce((sum, s) => sum + s.tax, 0)));
+  assert.equal(report.data.totals.input_tax, round2(purchases.reduce((sum, p) => sum + p.tax, 0)));
+  assert.equal(report.data.totals.net_payable, round2(report.data.totals.output_tax - report.data.totals.input_tax));
+  assert.equal(report.data.totals.sales_invoices, sales.length);
+  assert.equal(report.data.totals.purchase_invoices, purchases.length);
+
+  const daySum = round2(report.data.days.reduce((sum, d) => sum + d.net, 0));
+  assert.equal(daySum, report.data.totals.net_payable);
+
+  assert.equal((await req('GET', '/api/reports/vat?days=9999')).data.window.days, 366);
+  assert.equal((await req('GET', '/api/reports/vat', null, false)).status, 401);
+});
+
+test('a manual export carries purchasing data and imports back intact', async () => {
+  const exported = await req('GET', '/api/backup');
+  assert.equal(exported.status, 200);
+  for (const key of ['suppliers', 'purchases', 'purchase_items', 'supplier_payments', 'stocktakes', 'stocktake_items']) {
+    assert.ok(Array.isArray(exported.data[key]), `${key} is in the export`);
+  }
+  assert.ok(exported.data.supplier_payments.length >= 1);
+  const counts = {
+    suppliers: exported.data.suppliers.length,
+    purchases: exported.data.purchases.length,
+    payments: exported.data.supplier_payments.length,
+  };
+
+  const imported = await req('POST', '/api/backup/import', exported.data);
+  assert.equal(imported.status, 200);
+  const after = await req('GET', '/api/backup');
+  assert.equal(after.data.suppliers.length, counts.suppliers);
+  assert.equal(after.data.purchases.length, counts.purchases);
+  assert.equal(after.data.supplier_payments.length, counts.payments);
+
+  // An old export without the purchasing keys must not delete suppliers.
+  const legacy = { ...exported.data };
+  for (const key of ['suppliers', 'purchases', 'purchase_items', 'supplier_payments', 'stocktakes', 'stocktake_items']) delete legacy[key];
+  assert.equal((await req('POST', '/api/backup/import', legacy)).status, 200);
+  assert.equal((await req('GET', '/api/suppliers')).data.length, counts.suppliers);
+});
+
 // ---------- profit report ----------
 test('the profit report prices sales against the recorded cost and is admin-only', async () => {
   await req('POST', '/api/shifts/open', { openingFloat: 0 });
@@ -572,7 +725,13 @@ test('the profit report prices sales against the recorded cost and is admin-only
   const report = await req('GET', '/api/reports/profit?days=7');
   assert.equal(report.status, 200);
   assert.equal(report.data.window.days, 7);
-  assert.equal(report.data.cost_source, 'current');
+  assert.equal(report.data.cost_source, 'snapshot', 'the sale captured the unit cost');
+
+  // Changing the product cost afterwards must not rewrite history.
+  await req('PUT', `/api/products/${product.id}`, { costPrice: 40 });
+  const afterCostChange = await req('GET', '/api/reports/profit?days=7');
+  const stable = afterCostChange.data.products.find(p => p.id === product.id);
+  assert.equal(stable.cost, 40, 'the snapshot keeps the old cost (40 for 4 units at 10)');
   assert.ok(report.data.totals.sales >= 1);
 
   const row = report.data.products.find(p => p.id === product.id);
