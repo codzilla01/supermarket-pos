@@ -145,6 +145,10 @@ test('the app shell is Arabic, RTL and loads the i18n layer before app.js', () =
   assert.match(html, /<html lang="ar" dir="rtl">/);
   assert.match(html, /<script src="i18n\.js"><\/script>/);
   assert.ok(html.indexOf('i18n.js') < html.indexOf('app.js'), 'i18n.js must load before app.js');
+  for (const modalId of ['supplier-modal', 'statement-modal', 'purchase-modal', 'purchase-detail-modal', 'user-modal', 'queue-modal']) {
+    assert.ok(html.indexOf(`id="${modalId}"`) > 0, `missing modal #${modalId}`);
+    assert.ok(html.indexOf(`id="${modalId}"`) < html.indexOf('src="app.js"'), `app.js must load after #${modalId}`);
+  }
   assert.match(html, /data-lang-toggle/, 'a language switch must be reachable from the UI');
   // the cart placeholder must live outside #cart-items so renderCart() cannot wipe it
   assert.match(html, /<p class="cart-empty" id="cart-empty"[\s\S]*?<\/p>\s*<div class="cart-items" id="cart-items">/);

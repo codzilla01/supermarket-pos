@@ -355,13 +355,13 @@ function showApp() {
   const admin = me.role === 'admin';
   const developer = me.role === 'developer';
   const blocked = !developer && !['trial', 'active'].includes(me.subscriptionStatus || 'trial');
-  $$('.admin-only').forEach(el => { el.style.display = admin ? '' : 'none'; });
+  $$('.admin-only').forEach(el => { el.style.display = admin && !blocked ? '' : 'none'; });
   $$('.developer-only').forEach(el => { el.style.display = developer ? '' : 'none'; });
   $$('.subscription-tab').forEach(el => { el.style.display = developer ? 'none' : ''; });
   $$('.tab[data-view="pos"], .tab[data-view="inventory"], .tab[data-view="sales"], .tab[data-view="customers"]').forEach(el => { el.style.display = blocked || developer ? 'none' : ''; });
   $('#shift-badge').style.display = blocked || developer ? 'none' : '';
   $('#notifications-btn').style.display = developer ? 'none' : '';
-  $('#queue-badge').style.display = developer ? 'none' : '';
+  $('#queue-badge').style.display = blocked || developer ? 'none' : '';
   renderUserChip();
   $('#brand-name').textContent = settings.store_name;
   $('#login-store').textContent = settings.store_name;
@@ -534,24 +534,37 @@ async function ensureShift() {
 function syncShiftModalCurrency() {
   $('#shift-float-label').textContent = t('shift.openingFloat', { currency: settings.currency });
   $('#shift-counted-label').textContent = t('shift.counted', { currency: settings.currency });
-  $('#expected-cash').textContent = money(0);
-  $('#variance').textContent = money(0);
+  const expected = shift && shift.expected_cash != null ? Number(shift.expected_cash) : 0;
+  $('#expected-cash').textContent = shift ? money(expected) : '—';
+  updateShiftVariance();
 }
-function openShiftModal(mode) {
+function updateShiftVariance() {
+  const expected = shift && shift.expected_cash != null ? Number(shift.expected_cash) : null;
+  const raw = $('#closing-amount').value.trim();
+  const varianceEl = $('#variance');
+  if (expected === null || raw === '') {
+    varianceEl.textContent = money(0);
+    varianceEl.classList.remove('negative');
+    return;
+  }
+  const diff = round2((parseFloat(raw) || 0) - expected);
+  varianceEl.textContent = (diff > 0 ? '+' : '') + money(diff);
+  varianceEl.classList.toggle('negative', diff < 0);
+}
+async function openShiftModal(mode) {
+  if (mode === 'close') await refreshShift();
   $('#shift-modal-title').textContent = mode === 'open' ? t('shift.openTitle') : t('shift.closeTitle');
   $('#shift-open-fields').hidden = mode !== 'open';
   $('#shift-close-fields').hidden = mode !== 'close';
+  $('#shift-cancel').hidden = mode !== 'close';
   $('#shift-confirm').textContent = mode === 'open' ? t('shift.openBtn') : t('shift.closeBtn');
   $('#shift-confirm').dataset.mode = mode;
+  if (mode === 'close') $('#closing-amount').value = '';
   syncShiftModalCurrency();
-  if (mode === 'close' && shift) {
-    // Expected cash is computed server-side on close; show estimate from sales
-    $('#expected-cash').textContent = '—';
-    $('#closing-amount').value = '';
-    $('#variance').textContent = money(0);
-  }
   $('#shift-modal').hidden = false;
+  setTimeout(() => $(mode === 'open' ? '#opening-float' : '#closing-amount').focus(), 50);
 }
+$('#closing-amount').addEventListener('input', updateShiftVariance);
 
 $('#shift-badge').addEventListener('click', () => openShiftModal(shift ? 'close' : 'open'));
 $('#shift-confirm').addEventListener('click', async () => {
@@ -779,12 +792,45 @@ $('#complete-sale').addEventListener('click', async () => {
     afterSale();
   } catch (e) {
     if (e.offline) {
-      queueSale(payload);
+      const offlineItems = cartEntries().map(entry => ({
+        name: entry.product.name,
+        emoji: entry.product.emoji || '📦',
+        qty: entry.qty,
+        price: entry.product.price,
+        line_total: round2(entry.product.price * entry.qty),
+        tax_rate: entry.product.tax_rate == null ? taxRate() : Number(entry.product.tax_rate),
+        tax: round2(entry.product.price * entry.qty * (entry.product.tax_rate == null ? taxRate() : Number(entry.product.tax_rate))),
+      }));
+      const offlineSale = {
+        id: 'OFFLINE',
+        date: new Date().toISOString(),
+        cashier_name: me?.name || me?.username || '—',
+        register: terminalRegister(),
+        subtotal: tot.subtotal,
+        discount_pct: tot.discountPct,
+        discount: tot.discount,
+        points_redeemed: tot.redeem,
+        tax: tot.tax,
+        total: tot.total,
+        payment: 'cash',
+        tendered: payload.tendered,
+        change: round2(payload.tendered - tot.total),
+        points_earned: 0,
+        items: offlineItems,
+        _offline: true,
+      };
+      for (const item of payload.items) {
+        const prod = products.find(p => p.id === item.id);
+        if (prod) prod.stock = Math.max(0, prod.stock - item.qty);
+      }
+      queueSale(payload, offlineSale);
       toast(t('checkout.offlineQueued'));
       notifyUser(t('checkout.queuedTitle'), t('checkout.queuedNote'), { level: 'warning', key: `queued-${payload.idempotencyKey}` });
       cart = {}; $('#discount').value = 0; $('#redeem-points').checked = false;
-      renderCart();
+      renderGrid(); renderCart();
       $('#checkout-modal').hidden = true;
+      lastSale = offlineSale;
+      showReceipt(offlineSale);
       return;
     }
     err.textContent = t('err.prefix', { message: e.message });
@@ -808,7 +854,7 @@ function showReceipt(sale) {
   const receiptModal = $('#receipt-modal .modal');
   if (receiptModal) receiptModal.dir = I18N.dir();
   const rows = sale.items.map(i =>
-    `<div class="r-row"><span dir="auto">${i.emoji} ${esc(i.name)} <bdi>×${i.qty}</bdi></span><span class="amount">${money(i.line_total)}</span></div>`).join('');
+    `<div class="r-row"><span dir="auto">${i.emoji || '📦'} ${esc(i.name)} <bdi>×${i.qty}</bdi></span><span class="amount">${money(i.line_total)}</span></div>`).join('');
   const taxRows = sale.items.length && sale.items.every(i => i.tax_rate != null && i.tax != null)
     ? Object.entries(sale.items.reduce((groups, i) => {
         const key = Number(i.tax_rate);
@@ -817,12 +863,13 @@ function showReceipt(sale) {
       }, {})).map(([rate, amount]) => `<div class="r-row"><span>${esc(t('receipt.taxRate', { rate: (Number(rate) * 100).toFixed(0) }))}</span><span class="amount">${money(amount)}</span></div>`).join('')
     : `<div class="r-row"><span>${esc(t('receipt.tax'))}</span><span class="amount">${money(sale.tax)}</span></div>`;
   $('#receipt-body').innerHTML = `
-    <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(terminalRegister())}</div>
+    <div class="r-head"><h2>🛒 ${esc(settings.store_name)}</h2><div>${esc(sale.register || terminalRegister())}</div>
     ${settings.store_address ? `<div>${esc(settings.store_address)}</div>` : ''}
     ${settings.store_phone ? `<div>${esc(settings.store_phone)}</div>` : ''}
     ${settings.vat_number ? `<div>${esc(t('receipt.vat', { vat: settings.vat_number }))}</div>` : ''}
     <div>${esc(t('receipt.saleNo', { id: sale.id, date: fmtDate(sale.date) }))}</div>
-    <div>${esc(t('receipt.cashier', { name: me.name || me.username }))}</div></div>
+    ${sale._offline ? `<div class="muted small">${esc(t('queue.offlineReceipt'))}</div>` : ''}
+    <div>${esc(t('receipt.cashier', { name: sale.cashier_name || me?.name || me?.username || '—' }))}</div></div>
     ${rows}
     <div class="r-row"><span>${esc(t('receipt.subtotal'))}</span><span class="amount">${money(sale.subtotal)}</span></div>
     ${sale.discount ? `<div class="r-row"><span>${esc(t('receipt.discount', { pct: sale.discount_pct }))}</span><span class="amount">−${money(sale.discount)}</span></div>` : ''}
@@ -840,9 +887,14 @@ $('#print-receipt').addEventListener('click', () => window.print());
 // ---------- Offline queue ----------
 const QUEUE_KEY = 'pos_offline_queue';
 function getQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch { return []; } }
-function queueSale(payload) {
+function queueSale(payload, summary = null) {
   const q = getQueue();
-  q.push({ payload, queuedAt: new Date().toISOString() });
+  q.push({
+    payload,
+    queuedAt: new Date().toISOString(),
+    total: summary?.total ?? null,
+    itemsCount: payload.items.reduce((s, i) => s + i.qty, 0),
+  });
   localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
   updateQueueBadge();
 }
@@ -854,7 +906,44 @@ function updateQueueBadge() {
   const issues = getQueue().map(x => x.lastError).filter(Boolean);
   badge.title = issues.length ? t('queue.syncError', { error: issues[0] }) : t('queue.syncTitle');
 }
-$('#queue-badge').addEventListener('click', syncQueue);
+function renderQueueModal() {
+  const q = getQueue();
+  $('#queue-retry-all').disabled = q.length === 0;
+  $('#queue-list').innerHTML = q.length ? q.map((entry, idx) => `
+    <div class="queue-item ${entry.lastError ? 'has-error' : ''}">
+      <div class="queue-item-meta">
+        <strong><bdi>${esc(fmtDate(entry.queuedAt))}</bdi> · ${esc(t('queue.itemsCount', { n: entry.itemsCount ?? entry.payload.items.reduce((s, i) => s + i.qty, 0) }))}${entry.total != null ? ` · ${money(entry.total)}` : ''}</strong>
+        <div class="muted small"><bdi>${esc(entry.payload.idempotencyKey)}</bdi></div>
+        ${entry.lastError ? `<div class="queue-item-error">${esc(t('queue.errorLabel', { error: entry.lastError }))}</div>` : ''}
+      </div>
+      <button type="button" class="btn danger small" data-queue-discard="${idx}">${esc(t('queue.discard'))}</button>
+    </div>`).join('') : `<p class="muted">${esc(t('queue.empty'))}</p>`;
+  $$('#queue-list [data-queue-discard]').forEach(btn => btn.addEventListener('click', () => {
+    if (!confirm(t('queue.discardConfirm'))) return;
+    const list = getQueue();
+    const [removed] = list.splice(+btn.dataset.queueDiscard, 1);
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(list));
+    if (removed?.payload?.items) {
+      for (const item of removed.payload.items) {
+        const prod = products.find(p => p.id === item.id);
+        if (prod) prod.stock += item.qty;
+      }
+      renderGrid();
+    }
+    updateQueueBadge();
+    renderQueueModal();
+    if (!list.length) closeModal('#queue-modal');
+  }));
+}
+$('#queue-badge').addEventListener('click', () => {
+  renderQueueModal();
+  openModal('#queue-modal');
+});
+$('#queue-retry-all').addEventListener('click', async () => {
+  await syncQueue();
+  renderQueueModal();
+  if (!getQueue().length) closeModal('#queue-modal');
+});
 async function syncQueue() {
   const q = getQueue();
   if (!q.length) return;
@@ -898,16 +987,28 @@ setInterval(async () => {
 
 // ---------- Inventory ----------
 function renderInventory() {
-  $('#inv-count').textContent = t('inv.count', { n: products.length });
+  const q = ($('#inv-search').value || '').trim().toLowerCase();
+  const cat = $('#inv-cat').value;
+  const lowOnly = $('#inv-low').checked;
+  const currentCat = cat;
+  $('#inv-cat').innerHTML = `<option value="">${esc(t('inv.allCategories'))}</option>` +
+    categories().filter(c => c !== 'All').map(c => `<option value="${esc(c)}">${esc(categoryLabel(c))}</option>`).join('');
+  $('#inv-cat').value = currentCat;
+  const threshold = +settings.low_stock_threshold;
+  const filtered = products.filter(p =>
+    (!cat || p.category === cat) &&
+    (!lowOnly || p.stock <= threshold) &&
+    (!q || p.name.toLowerCase().includes(q) || String(p.barcode || '').toLowerCase().includes(q)));
+  $('#inv-count').textContent = t('inv.count', { n: filtered.length });
   const admin = me.role === 'admin';
-  $('#inv-body').innerHTML = products.map(p => {
-    const badge = p.stock <= 0 ? `<span class="stock-badge out">${esc(t('inv.out'))}</span>` : p.stock <= +settings.low_stock_threshold ? `<span class="stock-badge low">${p.stock}</span>` : `<span class="stock-badge">${p.stock}</span>`;
+  $('#inv-body').innerHTML = filtered.map(p => {
+    const badge = p.stock <= 0 ? `<span class="stock-badge out">${esc(t('inv.out'))}</span>` : p.stock <= threshold ? `<span class="stock-badge low">${p.stock}</span>` : `<span class="stock-badge">${p.stock}</span>`;
     return `<tr>
       <td style="font-size:22px">${p.emoji || '📦'}</td>
-      <td><strong dir="auto">${esc(p.name)}</strong></td><td dir="auto">${esc(p.category)}</td><td>${esc(p.barcode)}</td>
-      <td>${money(p.price)}</td><td>${esc(unitLabel(p.unit))}</td><td>${badge}</td>
+      <td><strong dir="auto">${esc(p.name)}</strong></td><td dir="auto">${esc(categoryLabel(p.category))}</td><td>${esc(p.barcode)}</td>
+      <td>${money(p.price)}</td>${admin ? `<td>${p.cost_price != null ? money(p.cost_price) : '—'}</td>` : ''}<td>${esc(unitLabel(p.unit))}</td><td>${badge}</td>
       ${admin ? `<td><button class="icon-btn" data-edit="${p.id}" title="${esc(t('inv.edit'))}">✏️</button><button class="icon-btn" data-del="${p.id}" title="${esc(t('inv.delete'))}">🗑</button></td>` : '<td></td>'}</tr>`;
-  }).join('');
+  }).join('') || `<tr><td colspan="${admin ? 9 : 7}" style="text-align:center;color:var(--muted)">${esc(t('pos.noMatch'))}</td></tr>`;
   $$('#inv-body [data-edit]').forEach(b => b.addEventListener('click', () => openProductForm(products.find(p => p.id === +b.dataset.edit))));
   $$('#inv-body [data-del]').forEach(b => b.addEventListener('click', async () => {
     if (!confirm(t('inv.removeConfirm'))) return;
@@ -918,6 +1019,9 @@ function renderInventory() {
     toast(t('inv.removed'));
   }));
 }
+$('#inv-search').addEventListener('input', renderInventory);
+$('#inv-cat').addEventListener('change', renderInventory);
+$('#inv-low').addEventListener('change', renderInventory);
 
 // ---------- Suppliers & purchases ----------
 let supplierRows = [];
@@ -1533,12 +1637,9 @@ async function renderAudit() {
   if (q) params.set('q', q);
   const data = await api('/api/audit?' + params.toString());
   $('#audit-count').textContent = t('audit.count', { n: data.total });
-  if ($('#audit-action').dataset.filled !== 'yes') {
-    $('#audit-action').innerHTML = `<option value="">${esc(t('audit.allActions'))}</option>` +
-      data.actions.map(a => `<option value="${esc(a.action)}">${esc(auditActionLabel(a.action))} (${a.c})</option>`).join('');
-    $('#audit-action').dataset.filled = 'yes';
-  }
-  $('#audit-action').value = action;
+  $('#audit-action').innerHTML = `<option value="">${esc(t('audit.allActions'))}</option>` +
+    data.actions.map(a => `<option value="${esc(a.action)}">${esc(auditActionLabel(a.action))} (${a.c})</option>`).join('');
+  $('#audit-action').value = data.actions.some(a => a.action === action) ? action : '';
   $('#audit-body').innerHTML = data.entries.map(entry => `<tr>
     <td class="nowrap"><bdi>${esc(fmtDateTime(entry.at))}</bdi></td>
     <td dir="auto">${esc(entry.actor || '—')}${entry.role ? ` <span class="muted small">(${esc(roleLabel(entry.role))})</span>` : ''}</td>
@@ -1600,15 +1701,19 @@ $('#product-form').addEventListener('submit', async e => {
 
 // ---------- Customers ----------
 function renderCustomers() {
-  $('#cust-count').textContent = t('cust.count', { n: customers.length });
+  const q = ($('#cust-search').value || '').trim().toLowerCase();
+  const filtered = customers.filter(c =>
+    !q || c.name.toLowerCase().includes(q) || String(c.phone || '').toLowerCase().includes(q) || String(c.email || '').toLowerCase().includes(q));
+  $('#cust-count').textContent = t('cust.count', { n: filtered.length });
   const admin = me.role === 'admin';
-  $('#cust-body').innerHTML = customers.map(c => `<tr>
+  $('#cust-body').innerHTML = filtered.map(c => `<tr>
     <td><strong dir="auto">${esc(c.name)}</strong></td><td dir="ltr">${esc(c.phone || '—')}</td><td dir="ltr">${esc(c.email || '—')}</td>
     <td>⭐ ${c.points}</td><td>${fmtDateShort(c.created_at)}</td>
     ${admin ? `<td><button class="icon-btn" data-edit="${c.id}" title="${esc(t('inv.edit'))}">✏️</button></td>` : '<td></td>'}</tr>`).join('')
     || `<tr><td colspan="6" style="text-align:center;color:var(--muted)">${esc(t('cust.none'))}</td></tr>`;
   $$('#cust-body [data-edit]').forEach(b => b.addEventListener('click', () => openCustomerForm(customers.find(c => c.id === +b.dataset.edit))));
 }
+$('#cust-search').addEventListener('input', renderCustomers);
 
 function openCustomerForm(c) {
   $('#customer-form-title').textContent = c ? t('cust.editTitle') : t('cust.addTitle');
@@ -1670,8 +1775,12 @@ async function renderSales() {
     <td>${s.payment === 'card' ? esc(t('sales.payCard')) : esc(t('sales.payCash'))}</td>
     <td><span class="status-badge ${s.status}">${esc(statusLabel(s.status))}</span></td>
     <td><strong>${money(s.total)}</strong></td>
-    ${admin && s.status === 'completed' ? `<td><button class="icon-btn" data-void="${s.id}" title="${esc(t('sales.voidTitle'))}">🚫</button><button class="icon-btn" data-refund="${s.id}" title="${esc(t('sales.refundTitle'))}">↩️</button></td>` : '<td></td>'}</tr>`).join('')
+    <td><button class="icon-btn" data-receipt="${s.id}" title="${esc(t('sales.receiptTitle'))}">🧾</button>${admin && s.status === 'completed' ? `<button class="icon-btn" data-void="${s.id}" title="${esc(t('sales.voidTitle'))}">🚫</button><button class="icon-btn" data-refund="${s.id}" title="${esc(t('sales.refundTitle'))}">↩️</button>` : ''}</td></tr>`).join('')
     : `<tr><td colspan="9" style="text-align:center;color:var(--muted)">${esc(t('sales.noTransactions'))}</td></tr>`;
+  $$('#sales-body [data-receipt]').forEach(b => b.addEventListener('click', () => {
+    const s = sales.find(x => x.id === +b.dataset.receipt);
+    if (s) { lastSale = s; showReceipt(s); }
+  }));
   $$('#sales-body [data-void]').forEach(b => b.addEventListener('click', () => saleAction(b.dataset.void, 'void')));
   $$('#sales-body [data-refund]').forEach(b => b.addEventListener('click', () => saleAction(b.dataset.refund, 'refund')));
 
@@ -1688,9 +1797,9 @@ async function renderSales() {
     const rows = [[t('csv.saleId'), t('col.date'), t('col.cashier'), t('col.customer'), t('csv.item'), t('csv.qty'), t('csv.unitPrice'), t('csv.lineTotal'), t('csv.discount'), t('receipt.tax'), t('col.total'), t('col.payment'), t('col.status')]];
     for (const s of sales) for (const i of s.items)
       rows.push([s.id, s.date, s.cashier_name || '', s.customer_name || '', i.name, i.qty, i.price, i.line_total, s.discount_pct, s.tax, s.total, s.payment, statusLabel(s.status)]);
-    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const csv = '\uFEFF' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n') + '\r\n';
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     a.download = 'freshmart-sales.csv';
     a.click();
   };
@@ -1837,14 +1946,39 @@ async function renderSettings() {
     <td><strong>${esc(u.username)}</strong></td><td dir="auto">${esc(u.name)}</td>
     <td>${u.role === 'admin' ? esc(t('role.ownerBadge')) : esc(t('role.cashierBadge'))}</td>
     <td>${u.active ? `<span class="stock-badge">${esc(t('status.active'))}</span>` : `<span class="stock-badge out">${esc(t('status.disabled'))}</span>`}</td>
-    <td>${u.id !== me.id ? `<button class="icon-btn" data-toggle="${u.id}" title="${esc(t('set.users'))}">${u.active ? '🚫' : '✅'}</button>` : ''}</td></tr>`).join('');
+    <td><button class="icon-btn" data-user-edit="${u.id}" title="${esc(t('set.editUser'))}">✏️</button>${u.id !== me.id ? `<button class="icon-btn" data-toggle="${u.id}" title="${esc(t('set.users'))}">${u.active ? '🚫' : '✅'}</button>` : ''}</td></tr>`).join('');
   await renderBackups();
+  $$('#users-body [data-user-edit]').forEach(b => b.addEventListener('click', () => {
+    const u = users.find(x => x.id === +b.dataset.userEdit);
+    if (!u) return;
+    $('#ue-id').value = u.id;
+    $('#ue-username').value = u.username;
+    $('#ue-name').value = u.name;
+    $('#ue-role').value = u.role === 'admin' ? 'admin' : 'cashier';
+    $('#ue-password').value = '';
+    openModal('#user-modal');
+    setTimeout(() => $('#ue-name').focus(), 50);
+  }));
   $$('#users-body [data-toggle]').forEach(b => b.addEventListener('click', async () => {
     const u = users.find(x => x.id === +b.dataset.toggle);
     await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify({ active: !u.active }) });
     renderSettings();
   }));
 }
+
+$('#user-edit-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = +$('#ue-id').value;
+  const body = { name: $('#ue-name').value.trim(), role: $('#ue-role').value };
+  const pw = $('#ue-password').value;
+  if (pw) body.password = pw;
+  try {
+    await api(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    closeModal('#user-modal');
+    toast(t('set.userSaved'));
+    renderSettings();
+  } catch (err) { toast(t('err.prefix', { message: err.message })); }
+});
 
 // ---------- Server-side automatic backups ----------
 async function renderBackups() {
@@ -2013,7 +2147,7 @@ async function refreshAll() {
   try {
     const data = await api('/api/me');
     me = data.user;
-    if (me.must_change_password) {
+    if (me.mustChangePassword || me.must_change_password) {
       $('#login-screen').hidden = true;
       $('#force-password-modal').hidden = false;
       $('#force-pw-current').focus();

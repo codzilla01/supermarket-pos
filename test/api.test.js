@@ -226,3 +226,35 @@ test('developer console records annual payment, activation, suspension and resto
   assert.equal(available.status, 200);
   assert.ok(restored.data.events.some(e => e.action === 'activated'));
 });
+
+test('current shift reports expected cash and customer updates handle phone conflicts cleanly', async () => {
+  await req('POST', '/api/login', { username: 'admin', password: 'freshmart-admin-test-2026' }, false);
+  const meRes = await req('GET', '/api/me');
+  assert.equal(meRes.status, 200);
+  assert.equal(meRes.data.user.mustChangePassword, false);
+
+  const opened = await req('POST', '/api/shifts/open', { openingFloat: 150 }, true, 'Register 3');
+  assert.equal(opened.status, 201);
+  const sale = await req('POST', '/api/sales', { idempotencyKey: 'test-shift-expected-cash-01', items: [{ id: 1, qty: 1 }], payment: 'cash', tendered: 50 }, true, 'Register 3');
+  assert.equal(sale.status, 201);
+
+  const current = await req('GET', '/api/shifts/current', null, true, 'Register 3');
+  assert.equal(current.status, 200);
+  assert.equal(current.data.shift.sales_count, 1);
+  assert.equal(current.data.shift.cash_sales, sale.data.total);
+  assert.equal(current.data.shift.expected_cash, Number((150 + sale.data.total).toFixed(2)));
+  await req('POST', '/api/shifts/close', { closingAmount: current.data.shift.expected_cash }, true, 'Register 3');
+
+  const c1 = await req('POST', '/api/customers', { name: 'Customer One', phone: '+201011111111', email: 'c1@example.com' });
+  const c2 = await req('POST', '/api/customers', { name: 'Customer Two', phone: '+201022222222' });
+  assert.equal(c1.status, 201);
+  assert.equal(c2.status, 201);
+
+  const dup = await req('PUT', `/api/customers/${c2.data.id}`, { phone: '+201011111111' });
+  assert.equal(dup.status, 409);
+
+  const cleared = await req('PUT', `/api/customers/${c2.data.id}`, { phone: '', points: 25 });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.data.phone, null);
+  assert.equal(cleared.data.points, 25);
+});

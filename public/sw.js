@@ -1,8 +1,13 @@
 'use strict';
 /* Service worker: caches the app shell so the POS UI loads offline.
    Sales made offline are queued in localStorage by app.js and synced on reconnect. */
-const CACHE = 'freshmart-pos-v10-token';
-const SHELL = ['/', '/index.html', '/styles.css', '/i18n.js', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'freshmart-pos-v11-complete';
+const SHELL = [
+  '/', '/index.html', '/styles.css', '/i18n.js', '/app.js', '/manifest.webmanifest',
+  '/icons/favicon-32.png', '/icons/apple-touch-icon-180.png',
+  '/icons/icon-192.png', '/icons/icon-512.png',
+  '/icons/icon-maskable-192.png', '/icons/icon-maskable-512.png',
+];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -13,12 +18,15 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.pathname.startsWith('/api/')) return; // never cache API
   e.respondWith(
     fetch(e.request).then(res => {
-      const copy = res.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copy));
+      if (res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy));
+      }
       return res;
     }).catch(() => caches.match(e.request).then(m => m || caches.match('/index.html')))
   );
