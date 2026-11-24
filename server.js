@@ -370,7 +370,7 @@ async function handleApi(req, res, url) {
     auth.deleteSession(db, sessionTokenFrom(req));
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': `pos_session=${sessionCookieAttributes({ maxAge: 0 })}` });
   }
-  if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, subscriptionStatus: subscriptionState().status } });
+  if (p === '/api/me' && method === 'GET') return sendJson(res, 200, { user: { ...user, mustChangePassword: !!user.must_change_password, subscriptionStatus: subscriptionState().status } });
   if (p === '/api/config' && method === 'GET') {
     return sendJson(res, 200, { settings: getSettings(db), paymentMethods: ['cash'] });
   }
@@ -467,6 +467,7 @@ async function handleApi(req, res, url) {
     const phone = str(b.phone, 30) || null;
     try {
       const info = db.prepare('INSERT INTO customers(name, phone, email) VALUES(?, ?, ?)').run(name, phone, str(b.email, 120));
+      audit(req, user, 'customer_created', 'customer', info.lastInsertRowid, { name, phone });
       return sendJson(res, 201, db.prepare('SELECT * FROM customers WHERE id = ?').get(info.lastInsertRowid));
     } catch (e) {
       if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Phone number already registered', messageAr: 'رقم الهاتف مسجّل بالفعل' });
@@ -479,15 +480,35 @@ async function handleApi(req, res, url) {
     const b = await readBody(req);
     const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(+custMatch[1]);
     if (!c) return sendJson(res, 404, { error: 'Customer not found', messageAr: 'العميل غير موجود' });
-    db.prepare('UPDATE customers SET name=?, phone=?, email=?, points=? WHERE id=?')
-      .run(str(b.name, 120) || c.name, str(b.phone, 30) || c.phone, str(b.email, 120), Math.max(0, int(b.points, c.points)), c.id);
+    const nextName = b.name !== undefined ? (str(b.name, 120) || c.name) : c.name;
+    const nextPhone = b.phone !== undefined ? (str(b.phone, 30) || null) : c.phone;
+    const nextEmail = b.email !== undefined ? str(b.email, 120) : c.email;
+    const nextPoints = b.points !== undefined ? Math.max(0, int(b.points, c.points)) : c.points;
+    try {
+      db.prepare('UPDATE customers SET name=?, phone=?, email=?, points=? WHERE id=?')
+        .run(nextName, nextPhone, nextEmail, nextPoints, c.id);
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) return sendJson(res, 409, { error: 'Phone number already registered', messageAr: 'رقم الهاتف مسجّل بالفعل' });
+      throw e;
+    }
+    audit(req, user, 'customer_updated', 'customer', c.id, { name: nextName, points: nextPoints });
     return sendJson(res, 200, db.prepare('SELECT * FROM customers WHERE id = ?').get(c.id));
   }
 
   // ----- Shifts -----
   if (p === '/api/shifts/current' && method === 'GET') {
     const shift = db.prepare("SELECT * FROM shifts WHERE status = 'open' AND register = ? ORDER BY id DESC LIMIT 1").get(registerFor(req));
-    return sendJson(res, 200, { shift: shift || null });
+    if (!shift) return sendJson(res, 200, { shift: null });
+    const summary = db.prepare("SELECT COUNT(*) AS sales_count, COALESCE(SUM(total), 0) AS cash_sales FROM sales WHERE shift_id = ? AND payment = 'cash' AND status = 'completed'").get(shift.id);
+    const cashSales = round2(summary.cash_sales);
+    return sendJson(res, 200, {
+      shift: {
+        ...shift,
+        sales_count: summary.sales_count,
+        cash_sales: cashSales,
+        expected_cash: round2(shift.opening_float + cashSales),
+      },
+    });
   }
   if (p === '/api/shifts' && method === 'GET') {
     return sendJson(res, 200, db.prepare('SELECT s.*, u.name AS cashier_name FROM shifts s LEFT JOIN users u ON u.id = s.cashier_id ORDER BY s.id DESC LIMIT 100').all());
@@ -674,25 +695,29 @@ async function handleApi(req, res, url) {
   // ----- Stats -----
   if (p === '/api/stats' && method === 'GET') {
     const today = new Date().toISOString().slice(0, 10);
-    const todays = db.prepare("SELECT * FROM sales WHERE date(date) = date(?) AND status = 'completed'").all(today);
-    const revenue = round2(todays.reduce((s, x) => s + x.total, 0));
-    const byProduct = {};
-    for (const s of db.prepare("SELECT * FROM sales WHERE status = 'completed'").all()) {
-      for (const i of db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(s.id)) {
-        byProduct[i.name] = byProduct[i.name] || { name: i.name, emoji: i.emoji, qty: 0, revenue: 0 };
-        byProduct[i.name].qty += i.qty;
-        byProduct[i.name].revenue += i.line_total;
-      }
-    }
-    const top = Object.values(byProduct).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+    const todayAgg = db.prepare(`
+      SELECT COUNT(*) AS transactions, COALESCE(SUM(total), 0) AS revenue
+      FROM sales WHERE date(date) = date(?) AND status = 'completed'`).get(today);
+    const todayItems = db.prepare(`
+      SELECT COALESCE(SUM(i.qty), 0) AS items
+      FROM sale_items i JOIN sales s ON s.id = i.sale_id
+      WHERE date(s.date) = date(?) AND s.status = 'completed'`).get(today).items;
+    const top = db.prepare(`
+      SELECT i.name, MAX(i.emoji) AS emoji, SUM(i.qty) AS qty, ROUND(SUM(i.line_total), 2) AS revenue
+      FROM sale_items i JOIN sales s ON s.id = i.sale_id
+      WHERE s.status = 'completed'
+      GROUP BY i.name
+      ORDER BY revenue DESC
+      LIMIT 8`).all();
+    const totalAgg = db.prepare("SELECT COUNT(*) AS c, COALESCE(SUM(total), 0) AS s FROM sales WHERE status = 'completed'").get();
     const threshold = int(getSettings(db).low_stock_threshold, 10);
     const byCashier = db.prepare(`
       SELECT u.name AS cashier, COUNT(*) AS transactions, COALESCE(SUM(s.total),0) AS revenue
       FROM sales s JOIN users u ON u.id = s.cashier_id
       WHERE s.status = 'completed' GROUP BY u.id ORDER BY revenue DESC`).all();
     return sendJson(res, 200, {
-      today: { transactions: todays.length, revenue, items: todays.reduce((s, x) => s + db.prepare('SELECT COALESCE(SUM(qty),0) AS q FROM sale_items WHERE sale_id = ?').get(x.id).q, 0) },
-      total: { transactions: db.prepare("SELECT COUNT(*) AS c FROM sales WHERE status = 'completed'").get().c, revenue: round2(db.prepare("SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE status = 'completed'").get().s) },
+      today: { transactions: todayAgg.transactions, revenue: round2(todayAgg.revenue), items: todayItems },
+      total: { transactions: totalAgg.c, revenue: round2(totalAgg.s) },
       lowStock: db.prepare('SELECT * FROM products WHERE active = 1 AND stock <= ? ORDER BY stock').all(threshold),
       top, byCashier,
     });
@@ -850,16 +875,18 @@ async function handleApi(req, res, url) {
         db.prepare('UPDATE users SET role=?, name=?, active=?, password_hash=?, must_change_password=1 WHERE id=?')
           .run(next.role, next.name, next.active, auth.hashPassword(b.password), target.id);
         db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?')
-          .run(target.id, auth.parseCookies(req).pos_session || '');
+          .run(target.id, sessionTokenFrom(req) || '');
       } else {
         db.prepare('UPDATE users SET role=?, name=?, active=? WHERE id=?').run(next.role, next.name, next.active, target.id);
       }
+      if (next.active === 0) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
       audit(req, user, 'user_updated', 'user', target.id, { role: next.role, active: next.active, passwordChanged: !!b.password });
       return sendJson(res, 200, db.prepare('SELECT id, username, role, name, active FROM users WHERE id = ?').get(target.id));
     }
     if (method === 'DELETE') {
       if (target.id === user.id) return sendJson(res, 400, { error: 'You cannot delete yourself', messageAr: 'لا يمكنك حذف حسابك' });
       db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(target.id);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
       audit(req, user, 'user_deactivated', 'user', target.id, target.username);
       return sendJson(res, 200, { ok: true });
     }
@@ -870,7 +897,7 @@ async function handleApi(req, res, url) {
     if (!auth.verifyPassword(b.current || '', me.password_hash)) return sendJson(res, 401, { error: 'Current password is incorrect', messageAr: 'كلمة المرور الحالية غير صحيحة' });
     if (String(b.next || '').length < MIN_PASSWORD_LENGTH) return sendJson(res, 400, { error: `New password min. ${MIN_PASSWORD_LENGTH} characters`, messageAr: `كلمة المرور الجديدة ${MIN_PASSWORD_LENGTH} حرفًا على الأقل` });
     db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(auth.hashPassword(b.next), user.id);
-    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(user.id, auth.parseCookies(req).pos_session || '');
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token <> ?').run(user.id, sessionTokenFrom(req) || '');
     audit(req, user, 'password_changed', 'user', user.id, 'self-service');
     return sendJson(res, 200, { ok: true });
   }
@@ -937,10 +964,10 @@ async function handleApi(req, res, url) {
         db.exec('DELETE FROM supplier_payments; DELETE FROM purchase_items; DELETE FROM purchases; DELETE FROM stocktake_items; DELETE FROM stocktakes; DELETE FROM suppliers;');
       }
       db.exec('DELETE FROM sale_items; DELETE FROM sales; DELETE FROM shifts; DELETE FROM customers; DELETE FROM products;');
-      const insP = db.prepare('INSERT INTO products(id, name, category, price, unit, stock, barcode, emoji, active, tax_rate) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-      for (const x of b.products) insP.run(x.id, x.name, x.category, x.price, x.unit, x.stock, x.barcode, x.emoji, x.active ?? 1, x.tax_rate ?? null);
-      const insC = db.prepare('INSERT INTO customers(id, name, phone, email, points) VALUES(?, ?, ?, ?, ?)');
-      for (const x of (b.customers || [])) insC.run(x.id, x.name, x.phone, x.email, x.points);
+      const insP = db.prepare('INSERT INTO products(id, name, category, price, unit, stock, barcode, emoji, active, tax_rate, cost_price) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const x of b.products) insP.run(x.id, x.name, x.category, x.price, x.unit, x.stock, x.barcode, x.emoji, x.active ?? 1, x.tax_rate ?? null, x.cost_price ?? null);
+      const insC = db.prepare('INSERT INTO customers(id, name, phone, email, points, created_at) VALUES(?, ?, ?, ?, ?, ?)');
+      for (const x of (b.customers || [])) insC.run(x.id, x.name, x.phone, x.email, x.points, x.created_at ?? new Date().toISOString());
       const insShift = db.prepare('INSERT INTO shifts(id, cashier_id, register, opening_float, expected_cash, closing_amount, opened_at, closed_at, status) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)');
       for (const x of (b.shifts || [])) insShift.run(x.id, x.cashier_id, x.register, x.opening_float, x.expected_cash, x.closing_amount, x.opened_at, x.closed_at, x.status);
       const insS = db.prepare('INSERT INTO sales(id, date, cashier_id, register, shift_id, subtotal, discount_pct, discount, tax, total, payment, tendered, change, status, customer_id, points_earned, points_redeemed, payment_intent_id, stripe_refund_id, idempotency_key) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
@@ -1536,7 +1563,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/')) {
       if (req.method === 'OPTIONS') {
-        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
+        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-POS-Register' });
         return res.end();
       }
       return await handleApi(req, res, url);

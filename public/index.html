@@ -137,8 +137,13 @@
       <button class="btn primary admin-only" id="add-product-btn" data-i18n="inv.add">＋ إضافة منتج</button>
     </div>
   </div>
+  <div class="import-controls filter-bar">
+    <input id="inv-search" type="text" data-i18n-placeholder="inv.search" placeholder="ابحث بالاسم أو الباركود…" />
+    <select id="inv-cat"><option value="" data-i18n="inv.allCategories">كل الأقسام</option></select>
+    <label class="inline-check"><input type="checkbox" id="inv-low" /> <span data-i18n="inv.lowOnly">مخزون منخفض / نافد فقط</span></label>
+  </div>
   <div class="table-wrap"><table>
-    <thead><tr><th></th><th data-i18n="col.product">المنتج</th><th data-i18n="col.category">القسم</th><th data-i18n="col.barcode">الباركود</th><th data-i18n="col.price">السعر</th><th data-i18n="col.unit">الوحدة</th><th data-i18n="col.stock">المخزون</th><th class="admin-only"></th></tr></thead>
+    <thead><tr><th></th><th data-i18n="col.product">المنتج</th><th data-i18n="col.category">القسم</th><th data-i18n="col.barcode">الباركود</th><th data-i18n="col.price">السعر</th><th class="admin-only" data-i18n="inv.colCost">التكلفة</th><th data-i18n="col.unit">الوحدة</th><th data-i18n="col.stock">المخزون</th><th class="admin-only"></th></tr></thead>
     <tbody id="inv-body"></tbody>
   </table></div>
 
@@ -327,7 +332,10 @@
 <!-- ============ CUSTOMERS VIEW ============ -->
 <main id="view-customers" class="view">
   <div class="page-head"><h2><span data-i18n="cust.title">👥 العملاء</span> <span class="muted" id="cust-count"></span></h2>
-    <button class="btn primary" id="add-customer-btn" data-i18n="cust.add">＋ إضافة عميل</button></div>
+    <div class="head-actions">
+      <input id="cust-search" type="text" data-i18n-placeholder="cust.search" placeholder="ابحث بالاسم أو الهاتف أو البريد…" />
+      <button class="btn primary" id="add-customer-btn" data-i18n="cust.add">＋ إضافة عميل</button>
+    </div></div>
   <div class="table-wrap"><table>
     <thead><tr><th data-i18n="col.name">الاسم</th><th data-i18n="col.phone">الهاتف</th><th data-i18n="col.email">البريد</th><th data-i18n="col.points">النقاط</th><th data-i18n="col.memberSince">عضو منذ</th><th class="admin-only"></th></tr></thead>
     <tbody id="cust-body"></tbody>
@@ -529,6 +537,7 @@
       <div class="row"><span data-i18n="shift.variance">الفرق</span><span id="variance">ج.م0.00</span></div>
     </div>
     <div class="modal-actions">
+      <button type="button" class="btn ghost" id="shift-cancel" data-close hidden data-i18n="shift.cancel">إلغاء</button>
       <button class="btn primary" id="shift-confirm">فتح الوردية</button>
     </div>
   </div>
@@ -620,7 +629,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="app.js"></script>
 <!-- ============ SUPPLIER MODAL ============ -->
 <div class="modal-backdrop" id="supplier-modal" hidden>
   <form class="modal" id="supplier-form">
@@ -738,5 +746,39 @@
   </div>
 </div>
 
+<!-- ============ USER EDIT MODAL ============ -->
+<div class="modal-backdrop" id="user-modal" hidden>
+  <form class="modal" id="user-edit-form">
+    <h2 data-i18n="set.userEditTitle">👤 تعديل المستخدم</h2>
+    <input type="hidden" id="ue-id" />
+    <label><span data-i18n="set.username">اسم المستخدم</span> <input id="ue-username" disabled /></label>
+    <label><span data-i18n="set.displayName">الاسم المعروض</span> <input id="ue-name" required /></label>
+    <label><span data-i18n="col.role">الدور</span>
+      <select id="ue-role">
+        <option value="cashier" data-i18n="role.cashier">كاشير</option>
+        <option value="admin" data-i18n="role.admin">مدير</option>
+      </select>
+    </label>
+    <label><span data-i18n="set.userResetPw">كلمة مرور مؤقتة جديدة (اختياري، 12 حرفًا على الأقل)</span> <input id="ue-password" type="password" minlength="12" autocomplete="new-password" /></label>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إلغاء</button>
+      <button type="submit" class="btn primary" data-i18n="set.userSave">حفظ التعديلات</button>
+    </div>
+  </form>
+</div>
+
+<!-- ============ OFFLINE QUEUE MODAL ============ -->
+<div class="modal-backdrop" id="queue-modal" hidden>
+  <div class="modal modal-wide">
+    <h2 data-i18n="queue.title">📶 طابور المبيعات دون اتصال</h2>
+    <div id="queue-list"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="checkout.cancel">إغلاق</button>
+      <button type="button" class="btn primary" id="queue-retry-all" data-i18n="queue.retryAll">↻ مزامنة الكل الآن</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
 </body>
 </html>

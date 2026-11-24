@@ -175,6 +175,22 @@ test('import applies creates and updates, and a repeat run changes nothing', asy
   const again = await req('POST', '/api/products/import', payload);
   assert.equal(again.data.created, 0, 'no duplicates on re-import');
   assert.equal(again.data.skipped, 2, 'unchanged rows are skipped');
+
+  // Omitting tax and stock columns must neither flag false updates nor zero out existing stock/tax.
+  const minimalUnchanged = 'name,price,category,unit,barcode\nأرز مصري ١ كجم,28.5,Pantry,kg,' + rice.barcode + '\n';
+  const minimalPlan = await req('POST', '/api/products/import/preview', uploadPayload('min.csv', Buffer.from(minimalUnchanged)));
+  assert.equal(minimalPlan.status, 200);
+  assert.equal(minimalPlan.data.summary.update, 0);
+  assert.equal(minimalPlan.data.summary.skip, 1);
+
+  const priceOnlyCsv = 'name,price,category,unit,barcode\nأرز مصري ١ كجم,29.5,Pantry,kg,' + rice.barcode + '\n';
+  const priceUpdated = await req('POST', '/api/products/import', uploadPayload('price.csv', Buffer.from(priceOnlyCsv)));
+  assert.equal(priceUpdated.status, 200);
+  assert.equal(priceUpdated.data.updated, 1);
+  const riceAfter = (await req('GET', '/api/products')).data.find(p => p.id === rice.id);
+  assert.equal(riceAfter.price, 29.5);
+  assert.equal(riceAfter.stock, 50, 'omitted stock column must preserve existing stock');
+  assert.equal(riceAfter.tax_rate, 0.14, 'omitted tax column must preserve existing tax_rate');
 });
 
 test('import accepts CSV, keeps existing rows when asked, and rejects junk', async () => {
@@ -514,6 +530,15 @@ test('the session token works as a bearer header when token auth is on', async (
   assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: 'Bearer not-a-session' } })).status, 401);
   assert.equal((await fetch(BASE + '/api/products')).status, 401);
 
+  // Rotating password over Bearer auth must keep the calling Bearer session alive.
+  const pwRotate = await fetch(BASE + '/api/me/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${body.token}` },
+    body: JSON.stringify({ current: 'store-manager-password-2026!', next: 'store-manager-password-2026!' }),
+  });
+  assert.equal(pwRotate.status, 200);
+  assert.equal((await fetch(BASE + '/api/me', { headers: { Authorization: `Bearer ${body.token}` } })).status, 200);
+
   const logout = await fetch(BASE + '/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${body.token}` } });
   assert.equal(logout.status, 200);
   assert.equal((await fetch(BASE + '/api/products', { headers: { Authorization: `Bearer ${body.token}` } })).status, 401);
@@ -528,6 +553,7 @@ test('session cookies are HttpOnly, Secure and SameSite=Lax by default', async (
   });
   assert.equal(login.status, 200);
   const setCookie = login.headers.get('set-cookie') || '';
+  cookie = setCookie.split(';')[0];
   assert.match(setCookie, /^pos_session=[^;]+; HttpOnly/);
   assert.match(setCookie, /SameSite=Lax/);
   assert.match(setCookie, /; Secure/);
@@ -705,6 +731,14 @@ test('a manual export carries purchasing data and imports back intact', async ()
   for (const key of ['suppliers', 'purchases', 'purchase_items', 'supplier_payments', 'stocktakes', 'stocktake_items']) delete legacy[key];
   assert.equal((await req('POST', '/api/backup/import', legacy)).status, 200);
   assert.equal((await req('GET', '/api/suppliers')).data.length, counts.suppliers);
+
+  // Cost prices on products must survive a backup export/import round-trip.
+  const pricedProd = (await req('GET', '/api/products')).data[0];
+  await req('PUT', `/api/products/${pricedProd.id}`, { costPrice: 12.34 });
+  const withCost = await req('GET', '/api/backup');
+  assert.equal((await req('POST', '/api/backup/import', withCost.data)).status, 200);
+  const reimported = (await req('GET', '/api/products')).data.find(p => p.id === pricedProd.id);
+  assert.equal(reimported.cost_price, 12.34);
 });
 
 // ---------- profit report ----------
